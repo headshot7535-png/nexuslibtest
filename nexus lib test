@@ -1,0 +1,1748 @@
+-- ============================================================
+--  NexusLib v1.3.1  |  GUI Library (Rayfield-style + ListTab + Notify)
+--  Usage:
+--    local Lib = loadstring(game:HttpGet("URL"))()
+--    local Win  = Lib:Window({ title="My GUI" })
+--    local Tab  = Win:Tab("⚙️","Settings")
+--    Tab:Section("Movement")
+--    Tab:Toggle("Infinite Jump", false, function(on) end)
+--    local spd = Tab:Slider("Walk Speed","0–300",{min=0,max=300,default=16}, function(v) end)
+--    spd:Set(120)  -- v1.3: set value from code (UI + callback)
+--    Tab:Dropdown("Quality", "Graphics", {"Low","Medium","High"}, 1, function(opt, idx) end)
+--    Tab:Keybind("Toggle GUI", "Press to show/hide", Enum.KeyCode.RightShift, function(key) end)
+--    Tab:Input("Name", "Your display name", "Enter name...", "", function(txt) end)
+--    Tab:ColorPicker("ESP Color", "Outline color", Color3.new(1,0,0), function(c) end)
+--    Tab:Separator()  Tab:Paragraph("Long description...")
+--    Tab:MultiSelect("Farm list", "Pick monsters", {"A","B","C"}, {1,2}, function(indices, values) end)
+--    Tab:Button("🔄","Respawn","Reset char", function() end)
+--    Win:Notify("Done", "Settings saved!", 3, "success")
+--    Win:Destroy()   -- tear down GUI
+--    Win:ChatTab()   -- optional firebaseUrl; supports image embeds via pasted URLs
+    Win:ListTab({ ... })   Win:PlayerTab()
+-- ============================================================
+
+local NexusLib = {}
+NexusLib.__index = NexusLib
+
+-- ── Services ─────────────────────────────────────────────────
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+local HS               = game:GetService("HttpService")
+
+-- ── Player ───────────────────────────────────────────────────
+local LP
+for _ = 1, 60 do
+    LP = Players.LocalPlayer
+    if LP and LP:FindFirstChildOfClass("PlayerGui") then break end
+    task.wait(0.2)
+end
+if not LP then return {} end
+
+local function getChar()  return LP.Character end
+local function getHuman() local c=getChar() return c and c:FindFirstChildOfClass("Humanoid") end
+local function getRoot()  local c=getChar() return c and c:FindFirstChild("HumanoidRootPart") end
+
+-- ── HTTP helper (executor-agnostic) ───────────────────────────
+local function httpRequest(opts)
+    local fn = (syn and syn.request)
+             or (http and http.request)
+             or (http_request)
+             or (request)
+             or (HttpPost and function(o)
+                 return { Body = HttpPost(o.Url, o.Body or "", o.Headers and o.Headers["Content-Type"] or "application/json") }
+             end)
+    if not fn then return nil end
+    return fn(opts)
+end
+
+-- Clipboard text (executors). Raw image paste like Discord desktop is not available in Roblox; use image **links**.
+local function getClipboardText()
+    local s = nil
+    if type(getclipboard) == "function" then
+        pcall(function() s = getclipboard() end)
+    elseif type(readclipboard) == "function" then
+        pcall(function() s = readclipboard() end)
+    end
+    if type(s) ~= "string" then return nil end
+    s = s:match("^%s*(.-)%s*$")
+    if s == "" then return nil end
+    return s
+end
+
+local function isImageLikeUrl(s)
+    if type(s) ~= "string" then return false end
+    s = s:match("^%s*(.-)%s*$") or ""
+    local low = s:lower()
+    if low:match("^rbxassetid://%d+") or low:match("^rbxthumb://") then return true end
+    if not low:match("^https?://") then return false end
+    if low:match("%.png") or low:match("%.jpe?g") or low:match("%.gif") or low:match("%.webp") or low:match("%.avif") then
+        return true
+    end
+    if low:find("discordapp.com/attachments", 1, true) or low:find("discord.com/attachments", 1, true) then return true end
+    if low:find("i.imgur.com", 1, true) or low:find("imgur.com", 1, true) then return true end
+    if low:find("media.discordapp.net", 1, true) then return true end
+    if low:find("gyazo.com", 1, true) or low:find("prnt.sc", 1, true) then return true end
+    return false
+end
+
+-- ── Theme ─────────────────────────────────────────────────────
+local C = {
+    bg      = Color3.fromRGB(8,10,18),
+    panel   = Color3.fromRGB(12,15,26),
+    card    = Color3.fromRGB(15,19,32),
+    border  = Color3.fromRGB(25,35,60),
+    accent  = Color3.fromRGB(0,180,255),
+    accentD = Color3.fromRGB(0,100,180),
+    text    = Color3.fromRGB(210,225,245),
+    sub     = Color3.fromRGB(60,80,120),
+    green   = Color3.fromRGB(0,200,100),
+    purple  = Color3.fromRGB(160,80,255),
+    red     = Color3.fromRGB(255,70,70),
+    orange  = Color3.fromRGB(255,160,30),
+    gold    = Color3.fromRGB(255,210,50),
+}
+
+-- ── Built-in feature state ────────────────────────────────────
+local _featureRunGen = 0
+local function newGen() _featureRunGen = _featureRunGen + 1; return _featureRunGen end
+
+-- ============================================================
+--  WINDOW
+-- ============================================================
+function NexusLib:Window(cfg)
+    cfg = cfg or {}
+    local title  = cfg.title  or "NexusLib"
+    local W      = cfg.width  or 360
+    local H      = cfg.height or 620
+
+    -- destroy old if re-executed
+    pcall(function()
+        local old = LP.PlayerGui:FindFirstChild("NexusLib_"..title:gsub("%s",""))
+        if old then old:Destroy() end
+    end)
+
+    local Screen = Instance.new("ScreenGui")
+    Screen.Name = "NexusLib_"..title:gsub("%s","")
+    Screen.ResetOnSpawn = false
+    Screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    Screen.Parent = LP.PlayerGui
+
+    -- ── Toggle icon ──────────────────────────────────────────
+    local ICON_IMAGE_OPEN = "rbxassetid://3117561276"
+    local Icon = Instance.new("ImageButton", Screen)
+    Icon.Image = ICON_IMAGE_OPEN
+    Icon.Size = UDim2.new(0,50,0,50)
+    Icon.Position = UDim2.new(0,10,0.5,-25)
+    Icon.BackgroundColor3 = Color3.fromRGB(5,5,15)
+    Icon.BorderSizePixel = 0; Icon.ZIndex = 20
+    Icon.ScaleType = Enum.ScaleType.Fit
+    Instance.new("UICorner",Icon).CornerRadius = UDim.new(1,0)
+    local iStroke = Instance.new("UIStroke",Icon)
+    iStroke.Color = C.accent; iStroke.Thickness = 2.5; iStroke.Transparency = 0.2
+    -- Label shown when minimized (replaces the image)
+    local IconLabel = Instance.new("TextLabel", Icon)
+    IconLabel.Size = UDim2.new(1,0,1,0)
+    IconLabel.BackgroundTransparency = 1
+    IconLabel.Text = "☰"
+    IconLabel.TextColor3 = C.accent
+    IconLabel.Font = Enum.Font.GothamBold
+    IconLabel.TextSize = 22
+    IconLabel.Visible = false
+
+    -- icon drag
+    local iDrag, iDragStart, iStartPos = false
+    Icon.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            iDrag = true; iDragStart = i.Position; iStartPos = Icon.Position
+        end
+    end)
+    Icon.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then iDrag = false end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if iDrag and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = i.Position - iDragStart
+            Icon.Position = UDim2.new(iStartPos.X.Scale, iStartPos.X.Offset+d.X,
+                                      iStartPos.Y.Scale, iStartPos.Y.Offset+d.Y)
+        end
+    end)
+
+    -- ── Main frame ───────────────────────────────────────────
+    local Main = Instance.new("Frame", Screen)
+    Main.Name = "Main"; Main.Size = UDim2.new(0,W,0,H)
+    Main.Position = UDim2.new(0.5,-W/2,0.5,-H/2)
+    Main.BackgroundColor3 = C.bg; Main.BorderSizePixel = 0
+    Main.Active = true; Main.Draggable = true; Main.ClipsDescendants = true
+    Instance.new("UICorner",Main).CornerRadius = UDim.new(0,14)
+    local mStroke = Instance.new("UIStroke",Main)
+    mStroke.Color = C.accent; mStroke.Thickness = 1.5; mStroke.Transparency = 0.6
+
+    local function updateIconForState()
+        local minimized = not Main.Visible
+        if minimized then
+            Icon.Image = ""
+            IconLabel.Visible = true
+            iStroke.Transparency = 0.2
+        else
+            Icon.Image = ICON_IMAGE_OPEN
+            IconLabel.Visible = false
+            iStroke.Transparency = 0.2
+        end
+    end
+    Icon.MouseButton1Click:Connect(function()
+        Main.Visible = not Main.Visible
+        updateIconForState()
+    end)
+    Main:GetPropertyChangedSignal("Visible"):Connect(updateIconForState)
+
+    -- ── Title bar ────────────────────────────────────────────
+    local TitleBar = Instance.new("Frame", Main)
+    TitleBar.Size = UDim2.new(1,0,0,46); TitleBar.BackgroundTransparency = 1
+
+    local TitleLbl = Instance.new("TextLabel", TitleBar)
+    TitleLbl.Text = title; TitleLbl.Size = UDim2.new(1,-60,1,0); TitleLbl.Position = UDim2.new(0,14,0,0)
+    TitleLbl.BackgroundTransparency = 1; TitleLbl.TextColor3 = C.text
+    TitleLbl.Font = Enum.Font.GothamBold; TitleLbl.TextSize = 15
+    TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local CloseBtn = Instance.new("TextButton", TitleBar)
+    CloseBtn.Text = "✕"; CloseBtn.Size = UDim2.new(0,28,0,28)
+    CloseBtn.Position = UDim2.new(1,-36,0.5,-14)
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(60,20,20); CloseBtn.BorderSizePixel = 0
+    CloseBtn.TextColor3 = C.red; CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 12
+    Instance.new("UICorner",CloseBtn).CornerRadius = UDim.new(1,0)
+    CloseBtn.MouseButton1Click:Connect(function() Main.Visible = false end)
+
+    -- ── Tab bar (scrollable) ─────────────────────────────────
+    local TabBar = Instance.new("ScrollingFrame", Main)
+    TabBar.Size = UDim2.new(1,-20,0,34); TabBar.Position = UDim2.new(0,10,0,50)
+    TabBar.BackgroundColor3 = C.card; TabBar.BorderSizePixel = 0
+    TabBar.ScrollBarThickness = 0; TabBar.ScrollingDirection = Enum.ScrollingDirection.X
+    TabBar.AutomaticCanvasSize = Enum.AutomaticSize.X; TabBar.CanvasSize = UDim2.new(0,0,0,0)
+    TabBar.ClipsDescendants = true
+    Instance.new("UICorner",TabBar).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke",TabBar).Color = C.border
+    local TBLayout = Instance.new("UIListLayout", TabBar)
+    TBLayout.FillDirection = Enum.FillDirection.Horizontal
+    TBLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    TBLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    TBLayout.Padding = UDim.new(0,4)
+    local TBPad = Instance.new("UIPadding", TabBar)
+    TBPad.PaddingLeft = UDim.new(0,4); TBPad.PaddingRight = UDim.new(0,4)
+
+    -- ── Content area ─────────────────────────────────────────
+    local Content = Instance.new("Frame", Main)
+    Content.Size = UDim2.new(1,-20,1,-108); Content.Position = UDim2.new(0,10,0,90)
+    Content.BackgroundTransparency = 1; Content.BorderSizePixel = 0
+    Content.ClipsDescendants = true
+
+    -- ── Status bar ───────────────────────────────────────────
+    local StatusBar = Instance.new("Frame", Main)
+    StatusBar.Size = UDim2.new(1,0,0,20); StatusBar.Position = UDim2.new(0,0,1,-20)
+    StatusBar.BackgroundColor3 = Color3.fromRGB(5,6,12); StatusBar.BorderSizePixel = 0
+    local SDot = Instance.new("Frame", StatusBar)
+    SDot.Size = UDim2.new(0,5,0,5); SDot.Position = UDim2.new(0,10,0.5,-2.5)
+    SDot.BackgroundColor3 = C.accent; SDot.BorderSizePixel = 0
+    Instance.new("UICorner",SDot).CornerRadius = UDim.new(1,0)
+    local SLbl = Instance.new("TextLabel", StatusBar)
+    SLbl.Text = "Ready · NexusLib v1.2"; SLbl.Size = UDim2.new(1,-115,1,0)
+    SLbl.Position = UDim2.new(0,20,0,0); SLbl.BackgroundTransparency = 1
+    SLbl.TextColor3 = C.sub; SLbl.Font = Enum.Font.Code; SLbl.TextSize = 9
+    SLbl.TextXAlignment = Enum.TextXAlignment.Left
+    local OnlineCountLbl = Instance.new("TextLabel", StatusBar)
+    OnlineCountLbl.Name = "OnlineCount"
+    OnlineCountLbl.Size = UDim2.new(0,100,1,0)
+    OnlineCountLbl.Position = UDim2.new(1,-6,0.5,0)
+    OnlineCountLbl.AnchorPoint = Vector2.new(1,0.5)
+    OnlineCountLbl.BackgroundTransparency = 1
+    OnlineCountLbl.Text = "🟢 ..."
+    OnlineCountLbl.TextColor3 = Color3.fromRGB(0,200,100)
+    OnlineCountLbl.Font = Enum.Font.GothamBold
+    OnlineCountLbl.TextSize = 9
+    OnlineCountLbl.TextXAlignment = Enum.TextXAlignment.Right
+    OnlineCountLbl.ZIndex = 10
+
+    -- ── Tab system ───────────────────────────────────────────
+    local tabs = {}
+    local activeTab = nil
+
+    local function switchTab(name)
+        activeTab = name
+        for tname, td in pairs(tabs) do
+            local on = (tname == name)
+            if on then
+                td.btn.BackgroundColor3 = C.accent
+                td.btn.TextColor3 = Color3.fromRGB(255,255,255)
+                local bPos = td.btn.AbsolutePosition.X - TabBar.AbsolutePosition.X
+                local bW   = td.btn.AbsoluteSize.X
+                local barW = TabBar.AbsoluteSize.X
+                TabBar.CanvasPosition = Vector2.new(math.max(0, bPos-(barW/2-bW/2)), 0)
+            else
+                td.btn.BackgroundColor3 = Color3.fromRGB(0,0,0)
+                td.btn.TextColor3 = C.sub
+                td.btn.BackgroundTransparency = 1
+            end
+            td.page.Visible = on
+        end
+    end
+
+    local PRESENCE_URL = "https://anipixels-chat-default-rtdb.firebaseio.com/presence"
+    local MY_KEY = tostring(LP.UserId)
+
+    -- Notify container (bottom-right of screen)
+    local NotifyContainer = Instance.new("Frame", Screen)
+    NotifyContainer.Name = "NotifyContainer"
+    NotifyContainer.Size = UDim2.new(0, 280, 1, 0)
+    NotifyContainer.Position = UDim2.new(1, -288, 0, 0)
+    NotifyContainer.BackgroundTransparency = 1
+    NotifyContainer.ClipsDescendants = false
+    local NotifyList = Instance.new("UIListLayout", NotifyContainer)
+    NotifyList.HorizontalAlignment = Enum.HorizontalAlignment.Right
+    NotifyList.VerticalAlignment = Enum.VerticalAlignment.Bottom
+    NotifyList.Padding = UDim.new(0, 8)
+    NotifyList.SortOrder = Enum.SortOrder.LayoutOrder
+    local NotifyPad = Instance.new("UIPadding", NotifyContainer)
+    NotifyPad.PaddingRight = UDim.new(0, 8)
+    NotifyPad.PaddingBottom = UDim.new(0, 24)
+
+    local Win = { _screen=Screen, _main=Main, _status=SLbl, _tabs=tabs, _switch=switchTab }
+
+    function Win:Status(msg) SLbl.Text = msg end
+
+    function Win:Notify(title, text, duration, notifType)
+        title = title or "Notification"
+        text = text or ""
+        duration = duration or 4
+        notifType = notifType or "default"
+        local accent = C.accent
+        if notifType == "success" then accent = C.green
+        elseif notifType == "warning" then accent = C.orange
+        elseif notifType == "error" then accent = C.red
+        end
+        local container = self._screen and self._screen:FindFirstChild("NotifyContainer")
+        if not container then return end
+        local toast = Instance.new("Frame", container)
+        toast.Size = UDim2.new(0, 260, 0, 0)
+        toast.AutomaticSize = Enum.AutomaticSize.Y
+        toast.BackgroundColor3 = C.card
+        toast.BorderSizePixel = 0
+        toast.LayoutOrder = math.floor(999999 - os.clock())
+        Instance.new("UICorner", toast).CornerRadius = UDim.new(0, 10)
+        local stroke = Instance.new("UIStroke", toast)
+        stroke.Color = accent
+        stroke.Thickness = 1.5
+        local pad = Instance.new("UIPadding", toast)
+        pad.PaddingLeft = UDim.new(0, 12)
+        pad.PaddingRight = UDim.new(0, 12)
+        pad.PaddingTop = UDim.new(0, 10)
+        pad.PaddingBottom = UDim.new(0, 10)
+        local layout = Instance.new("UIListLayout", toast)
+        layout.Padding = UDim.new(0, 4)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        local tTitle = Instance.new("TextLabel", toast)
+        tTitle.Text = title
+        tTitle.Size = UDim2.new(1, 0, 0, 16)
+        tTitle.BackgroundTransparency = 1
+        tTitle.TextColor3 = accent
+        tTitle.Font = Enum.Font.GothamBold
+        tTitle.TextSize = 12
+        tTitle.TextXAlignment = Enum.TextXAlignment.Left
+        tTitle.TextWrapped = true
+        tTitle.LayoutOrder = 1
+        local tText = Instance.new("TextLabel", toast)
+        tText.Text = text
+        tText.Size = UDim2.new(1, 0, 0, 0)
+        tText.AutomaticSize = Enum.AutomaticSize.Y
+        tText.BackgroundTransparency = 1
+        tText.TextColor3 = C.text
+        tText.Font = Enum.Font.Gotham
+        tText.TextSize = 10
+        tText.TextXAlignment = Enum.TextXAlignment.Left
+        tText.TextWrapped = true
+        tText.LayoutOrder = 2
+        task.delay(duration, function()
+            if toast and toast.Parent then
+                TweenService:Create(toast, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
+                for _, c in ipairs(toast:GetDescendants()) do
+                    if c:IsA("TextLabel") then pcall(function() c.TextTransparency = 1 end) end
+                end
+                task.delay(0.3, function() pcall(function() toast:Destroy() end) end)
+            end
+        end)
+        return toast
+    end
+
+    function Win:Destroy()
+        if self._screen and self._screen.Parent then
+            self._screen:Destroy()
+        end
+    end
+
+    -- ── Live user count ──────────────────────────────────────
+    local function startPresence()
+        _G.NexusLib_PresenceGen = (_G.NexusLib_PresenceGen or 0) + 1
+        local myGen = _G.NexusLib_PresenceGen
+        local serverID = game.JobId ~= "" and game.JobId:sub(1,8) or "studio"
+
+        local function upsert()
+            pcall(httpRequest, {
+                Url     = PRESENCE_URL.."/"..MY_KEY..".json",
+                Method  = "PUT",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body    = '{"t":' .. os.time() .. ',"s":"' .. serverID .. '"}',
+            })
+        end
+
+        local function countOnline()
+            local ok, res = pcall(httpRequest, {
+                Url     = PRESENCE_URL..".json",
+                Method  = "GET",
+                Headers = { ["Accept"] = "application/json" },
+            })
+            if not ok or not res or not res.Body or res.Body == "null" or res.Body == "" then
+                return 1
+            end
+            local ok2, data = pcall(HS.JSONDecode, HS, res.Body)
+            if not ok2 or type(data) ~= "table" then return 1 end
+            local now = os.time()
+            local count = 0
+            for _, v in pairs(data) do
+                if type(v) == "table" and v.t and (now - v.t) <= 45 then
+                    count = count + 1
+                end
+            end
+            return math.max(1, count)
+        end
+
+        task.spawn(function()
+            upsert()
+            local count = countOnline()
+            OnlineCountLbl.Text = "🟢 "..count.." online"
+            while true do
+                if _G.NexusLib_PresenceGen ~= myGen then
+                    pcall(httpRequest, {
+                        Url     = PRESENCE_URL.."/"..MY_KEY..".json",
+                        Method  = "PUT",
+                        Headers = { ["Content-Type"] = "application/json" },
+                        Body    = '{"t":0,"s":"gone"}',
+                    })
+                    break
+                end
+                task.wait(20)
+                upsert()
+                count = countOnline()
+                OnlineCountLbl.Text = "🟢 "..count.." online"
+            end
+        end)
+    end
+    startPresence()
+
+    function Win:Tab(icon, name)
+        local btn = Instance.new("TextButton", TabBar)
+        btn.Text = icon.." "..name; btn.Size = UDim2.new(0,70,0,26)
+        btn.BackgroundTransparency = 1; btn.TextColor3 = C.sub
+        btn.Font = Enum.Font.GothamBold; btn.TextSize = 10; btn.BorderSizePixel = 0
+        Instance.new("UICorner",btn).CornerRadius = UDim.new(0,7)
+
+        local page = Instance.new("ScrollingFrame", Content)
+        page.Size = UDim2.new(1,0,1,0); page.BackgroundTransparency = 1
+        page.BorderSizePixel = 0; page.ScrollBarThickness = 3
+        page.ScrollBarImageColor3 = C.accent; page.Visible = false
+        page.AutomaticCanvasSize = Enum.AutomaticSize.Y; page.CanvasSize = UDim2.new(0,0,0,0)
+        local layout = Instance.new("UIListLayout", page)
+        layout.Padding = UDim.new(0,6); layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        Instance.new("UIPadding",page).PaddingTop = UDim.new(0,8)
+
+        tabs[name] = { btn=btn, page=page, layout=layout }
+        btn.MouseButton1Click:Connect(function() switchTab(name) end)
+        if not activeTab then switchTab(name) end
+
+        local order = 0
+        local T = { _page=page, _layout=layout }
+
+        function T:Section(txt)
+            order = order + 1
+            local f = Instance.new("Frame", page)
+            f.Size = UDim2.new(1,-10,0,16); f.BackgroundTransparency = 1; f.LayoutOrder = order
+            local line = Instance.new("Frame", f)
+            line.Size = UDim2.new(1,0,0,1); line.Position = UDim2.new(0,0,0.5,0)
+            line.BackgroundColor3 = C.border; line.BorderSizePixel = 0
+            local bg = Instance.new("Frame", f)
+            bg.Size = UDim2.new(0,0,1,0); bg.AutomaticSize = Enum.AutomaticSize.X
+            bg.Position = UDim2.new(0,8,0,0); bg.BackgroundColor3 = C.bg; bg.BorderSizePixel = 0
+            Instance.new("UIPadding",bg).PaddingLeft = UDim.new(0,6)
+            local lbl = Instance.new("TextLabel", bg)
+            lbl.Text = txt:upper(); lbl.Size = UDim2.new(0,0,1,0); lbl.AutomaticSize = Enum.AutomaticSize.X
+            lbl.BackgroundTransparency = 1; lbl.TextColor3 = C.sub
+            lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 9
+            return f
+        end
+
+        function T:Toggle(label, desc, default, cb)
+            order = order + 1
+            local state = default or false
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,52); Card.BackgroundColor3 = C.card
+            Card.BorderSizePixel = 0; Card.LayoutOrder = order
+            Instance.new("UICorner",Card).CornerRadius = UDim.new(0,10)
+            local cs = Instance.new("UIStroke",Card); cs.Color = C.border; cs.Thickness = 1
+
+            local nL = Instance.new("TextLabel",Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-120,0,18); nL.Position = UDim2.new(0,14,0,8)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = C.text
+            nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left
+
+            local dL = Instance.new("TextLabel",Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-120,0,14); dL.Position = UDim2.new(0,14,0,28)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub
+            dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+
+            local badge = Instance.new("TextLabel",Card)
+            badge.Size = UDim2.new(0,34,0,17); badge.Position = UDim2.new(1,-88,0.5,-8)
+            badge.BackgroundColor3 = C.panel; badge.BorderSizePixel = 0
+            badge.Font = Enum.Font.GothamBold; badge.TextSize = 9
+            Instance.new("UICorner",badge).CornerRadius = UDim.new(0,5)
+
+            local Pill = Instance.new("Frame",Card)
+            Pill.Size = UDim2.new(0,44,0,24); Pill.Position = UDim2.new(1,-50,0.5,-12)
+            Pill.BorderSizePixel = 0
+            Instance.new("UICorner",Pill).CornerRadius = UDim.new(1,0)
+
+            local Thumb = Instance.new("Frame",Pill)
+            Thumb.Size = UDim2.new(0,18,0,18); Thumb.BorderSizePixel = 0
+            Instance.new("UICorner",Thumb).CornerRadius = UDim.new(1,0)
+
+            local ti = TweenInfo.new(0.18, Enum.EasingStyle.Quad)
+
+            local function setState(on)
+                state = on
+                if on then
+                    TweenService:Create(Pill, ti,{BackgroundColor3=C.accentD}):Play()
+                    TweenService:Create(Thumb,ti,{Position=UDim2.new(0,23,0.5,-9),BackgroundColor3=C.accent}):Play()
+                    cs.Color = C.accentD
+                    badge.Text = "ON"; badge.TextColor3 = C.accent
+                    badge.BackgroundColor3 = Color3.fromRGB(0,30,55)
+                else
+                    TweenService:Create(Pill, ti,{BackgroundColor3=C.border}):Play()
+                    TweenService:Create(Thumb,ti,{Position=UDim2.new(0,3,0.5,-9),BackgroundColor3=C.sub}):Play()
+                    cs.Color = C.border
+                    badge.Text = "OFF"; badge.TextColor3 = C.sub
+                    badge.BackgroundColor3 = C.panel
+                end
+                if cb then cb(on) end
+            end
+
+            if state then
+                Pill.BackgroundColor3 = C.accentD; cs.Color = C.accentD
+                Thumb.Position = UDim2.new(0,23,0.5,-9); Thumb.BackgroundColor3 = C.accent
+                badge.Text = "ON"; badge.TextColor3 = C.accent
+                badge.BackgroundColor3 = Color3.fromRGB(0,30,55)
+            else
+                Pill.BackgroundColor3 = C.border; cs.Color = C.border
+                Thumb.Position = UDim2.new(0,3,0.5,-9); Thumb.BackgroundColor3 = C.sub
+                badge.Text = "OFF"; badge.TextColor3 = C.sub
+                badge.BackgroundColor3 = C.panel
+            end
+
+            local Btn = Instance.new("TextButton",Card)
+            Btn.Size = UDim2.new(1,0,1,0); Btn.BackgroundTransparency = 1
+            Btn.Text = ""; Btn.ZIndex = 3
+            Btn.MouseButton1Click:Connect(function() setState(not state) end)
+
+            return { Set = setState, Get = function() return state end }
+        end
+
+        function T:Slider(label, desc, opts, cb)
+            -- Slider(label, opts, cb)  — 3-arg form
+            if type(desc) == "table" and type(opts) == "function" and cb == nil then
+                cb = opts
+                opts = desc
+                desc = ""
+            end
+            order = order + 1
+            opts = opts or {}
+            local minV    = opts.min     or 0
+            local maxV    = opts.max     or 100
+            local initV   = opts.default or minV
+            local fmt     = opts.format  or function(v) return tostring(math.floor(v)) end
+
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,60); Card.BackgroundColor3 = C.card
+            Card.BorderSizePixel = 0; Card.LayoutOrder = order
+            Instance.new("UICorner",Card).CornerRadius = UDim.new(0,10)
+            Instance.new("UIStroke",Card).Color = C.border
+
+            local nL = Instance.new("TextLabel",Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-80,0,18); nL.Position = UDim2.new(0,14,0,6)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = C.text
+            nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left
+
+            local vL = Instance.new("TextLabel",Card)
+            vL.Text = fmt(initV); vL.Size = UDim2.new(0,60,0,18); vL.Position = UDim2.new(1,-68,0,6)
+            vL.BackgroundTransparency = 1; vL.TextColor3 = C.accent
+            vL.Font = Enum.Font.Code; vL.TextSize = 13; vL.TextXAlignment = Enum.TextXAlignment.Right
+
+            local dL = Instance.new("TextLabel",Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-80,0,12); dL.Position = UDim2.new(0,14,0,26)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub
+            dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+
+            local Track = Instance.new("Frame",Card)
+            Track.Size = UDim2.new(1,-28,0,6); Track.Position = UDim2.new(0,14,0,44)
+            Track.BackgroundColor3 = C.panel; Track.BorderSizePixel = 0
+            Instance.new("UICorner",Track).CornerRadius = UDim.new(1,0)
+
+            local span = maxV - minV
+            local pct0 = span > 0 and (initV - minV) / span or 0
+            local Fill = Instance.new("Frame",Track)
+            Fill.Size = UDim2.new(pct0,0,1,0); Fill.BackgroundColor3 = C.accent; Fill.BorderSizePixel = 0
+            Instance.new("UICorner",Fill).CornerRadius = UDim.new(1,0)
+
+            local Knob = Instance.new("TextButton",Track)
+            Knob.Text = ""; Knob.Size = UDim2.new(0,16,0,16); Knob.AnchorPoint = Vector2.new(0.5,0.5)
+            Knob.Position = UDim2.new(pct0,0,0.5,0)
+            Knob.BackgroundColor3 = Color3.fromRGB(255,255,255); Knob.BorderSizePixel = 0; Knob.ZIndex = 4
+            Instance.new("UICorner",Knob).CornerRadius = UDim.new(1,0)
+
+            local curVal = initV
+            local dragging = false
+            local function isPressStart(i)
+                return i.UserInputType == Enum.UserInputType.MouseButton1
+                    or i.UserInputType == Enum.UserInputType.Touch
+            end
+            local function isPressEnd(i)
+                return i.UserInputType == Enum.UserInputType.MouseButton1
+                    or i.UserInputType == Enum.UserInputType.Touch
+            end
+            local function apply(ix)
+                if Track.AbsoluteSize.X <= 0 then return end
+                local rel = math.clamp(ix - Track.AbsolutePosition.X, 0, Track.AbsoluteSize.X)
+                local p   = rel / Track.AbsoluteSize.X
+                local v   = minV + math.round((maxV - minV) * p)
+                curVal = v
+                Fill.Size = UDim2.new(p,0,1,0); Knob.Position = UDim2.new(p,0,0.5,0)
+                vL.Text = fmt(v)
+                if cb then cb(v) end
+            end
+            Knob.InputBegan:Connect(function(i)
+                if isPressStart(i) then dragging = true end
+            end)
+            UserInputService.InputChanged:Connect(function(i)
+                if not dragging then return end
+                if i.UserInputType == Enum.UserInputType.MouseMovement
+                    or i.UserInputType == Enum.UserInputType.Touch then
+                    apply(i.Position.X)
+                end
+            end)
+            UserInputService.InputEnded:Connect(function(i)
+                if isPressEnd(i) then dragging = false end
+            end)
+            Track.InputBegan:Connect(function(i)
+                if isPressStart(i) then apply(i.Position.X) end
+            end)
+
+            local function setFromValue(rawV, silent)
+                local v = math.round(math.clamp(rawV, minV, maxV))
+                curVal = v
+                local s = maxV - minV
+                local p = s > 0 and (v - minV) / s or 0
+                Fill.Size = UDim2.new(p, 0, 1, 0)
+                Knob.Position = UDim2.new(p, 0, 0.5, 0)
+                vL.Text = fmt(v)
+                if not silent and cb then cb(v) end
+            end
+
+            return { Get = function() return curVal end, Set = setFromValue }
+        end
+
+        function T:Button(icon, label, desc, accentCol, cb)
+            if type(accentCol) == "function" then cb = accentCol; accentCol = nil end
+            accentCol = accentCol or C.accent
+            order = order + 1
+
+            local Card = Instance.new("TextButton", page)
+            Card.Size = UDim2.new(1,-10,0,44); Card.BackgroundColor3 = C.card
+            Card.BorderSizePixel = 0; Card.LayoutOrder = order; Card.Text = ""
+            Instance.new("UICorner",Card).CornerRadius = UDim.new(0,10)
+            local cs = Instance.new("UIStroke",Card); cs.Color = accentCol; cs.Thickness = 1
+
+            local iL = Instance.new("TextLabel",Card)
+            iL.Text = icon; iL.Size = UDim2.new(0,36,1,0); iL.Position = UDim2.new(0,6,0,0)
+            iL.BackgroundTransparency = 1; iL.TextSize = 18; iL.Font = Enum.Font.GothamBold
+            iL.TextXAlignment = Enum.TextXAlignment.Center
+
+            local nL = Instance.new("TextLabel",Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-50,0,18); nL.Position = UDim2.new(0,46,0,6)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = accentCol
+            nL.Font = Enum.Font.GothamBold; nL.TextSize = 11; nL.TextXAlignment = Enum.TextXAlignment.Left
+
+            local dL = Instance.new("TextLabel",Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-50,0,13); dL.Position = UDim2.new(0,46,0,24)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub
+            dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+
+            Card.MouseButton1Click:Connect(function()
+                TweenService:Create(Card,TweenInfo.new(0.08),{BackgroundColor3=Color3.fromRGB(20,25,40)}):Play()
+                task.delay(0.15,function() TweenService:Create(Card,TweenInfo.new(0.15),{BackgroundColor3=C.card}):Play() end)
+                if cb then cb() end
+            end)
+            return Card
+        end
+
+        function T:Label(txt)
+            order = order + 1
+            local f = Instance.new("Frame", page)
+            f.Size = UDim2.new(1,-10,0,28); f.BackgroundTransparency = 1; f.LayoutOrder = order
+            local l = Instance.new("TextLabel", f)
+            l.Size = UDim2.new(1,0,1,0); l.BackgroundTransparency = 1
+            l.TextColor3 = C.sub; l.Font = Enum.Font.Gotham; l.TextSize = 10
+            l.TextXAlignment = Enum.TextXAlignment.Left; l.TextWrapped = true
+            l.Text = txt
+            return { Set = function(s) l.Text = s end }
+        end
+
+        -- Dropdown: single-select by default, set multi=true for multi-select
+        -- Single: Dropdown(label, desc, options, defaultIndex, cb)
+        -- Multi : Dropdown(label, desc, options, defaultIndicesTable, cb, true)
+        function T:Dropdown(label, desc, options, defaultIndex, cb, multi)
+            order = order + 1
+            local cardOrder = order
+            local opts = options or {}
+            local list = {}
+            for i, v in ipairs(opts) do
+                if type(v) == "table" then list[i] = { text = v.text or v[1], value = v.value ~= nil and v.value or v[2] or v } else list[i] = { text = tostring(v), value = v } end
+            end
+            local isMulti = (multi == true) or (type(defaultIndex) == "table")
+            local curIdx = math.clamp((type(defaultIndex) == "number" and defaultIndex or 1), 1, math.max(1, #list))
+            local cur = list[curIdx]
+            local selected = {}
+            if isMulti then
+                for _, idx in ipairs(type(defaultIndex) == "table" and defaultIndex or {}) do
+                    if idx >= 1 and idx <= #list then selected[idx] = true end
+                end
+            end
+
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,52); Card.BackgroundColor3 = C.card; Card.BorderSizePixel = 0; Card.LayoutOrder = cardOrder
+            Instance.new("UICorner", Card).CornerRadius = UDim.new(0,10)
+            Instance.new("UIStroke", Card).Color = C.border
+
+            local nL = Instance.new("TextLabel", Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-80,0,18); nL.Position = UDim2.new(0,14,0,8)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = C.text; nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left
+            local dL = Instance.new("TextLabel", Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-80,0,12); dL.Position = UDim2.new(0,14,0,28)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub; dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+
+            local dropBtn = Instance.new("TextButton", Card)
+            dropBtn.Size = UDim2.new(0,100,0,24); dropBtn.Position = UDim2.new(1,-106,0.5,-12)
+            dropBtn.BackgroundColor3 = C.panel; dropBtn.BorderSizePixel = 0; dropBtn.Text = ""
+            Instance.new("UICorner", dropBtn).CornerRadius = UDim.new(0,6)
+            local dropLbl = Instance.new("TextLabel", dropBtn)
+            dropLbl.Size = UDim2.new(1,-22,1,0); dropLbl.Position = UDim2.new(0,6,0,0)
+            dropLbl.BackgroundTransparency = 1; dropLbl.TextColor3 = C.accent; dropLbl.Font = Enum.Font.GothamBold; dropLbl.TextSize = 10
+            dropLbl.TextXAlignment = Enum.TextXAlignment.Left; dropLbl.TextTruncate = Enum.TextTruncate.AtEnd
+            dropLbl.Text = cur and cur.text or "..."
+
+            local listFrame = Instance.new("Frame", page)
+            listFrame.Size = UDim2.new(1,-10,0,0); listFrame.BackgroundColor3 = C.card; listFrame.BorderSizePixel = 0; listFrame.Visible = false; listFrame.ClipsDescendants = true
+            listFrame.LayoutOrder = cardOrder + 1
+            order = cardOrder + 1
+            Instance.new("UICorner", listFrame).CornerRadius = UDim.new(0,8)
+            Instance.new("UIStroke", listFrame).Color = C.border
+            local listScroll = Instance.new("ScrollingFrame", listFrame)
+            listScroll.Size = UDim2.new(1,-4,1,-4); listScroll.Position = UDim2.new(0,2,0,2)
+            listScroll.BackgroundTransparency = 1; listScroll.BorderSizePixel = 0; listScroll.ScrollBarThickness = 3; listScroll.ScrollBarImageColor3 = C.accent
+            listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            local listLayout = Instance.new("UIListLayout", listScroll); listLayout.Padding = UDim.new(0,2); listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            local function refreshDropdownCanvas()
+                local contentY = listLayout.AbsoluteContentSize.Y
+                listScroll.CanvasSize = UDim2.new(0,0,0,math.max(contentY + 2, 0))
+            end
+            listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshDropdownCanvas)
+
+            local function getSelectedIndices()
+                local t = {}
+                for i = 1, #list do if selected[i] then t[#t+1] = i end end
+                return t
+            end
+            local function getSelectedValues()
+                local t = {}
+                for i = 1, #list do if selected[i] then t[#t+1] = list[i].value end end
+                return t
+            end
+            local function getSelectedTexts()
+                local t = {}
+                for i = 1, #list do if selected[i] then t[#t+1] = list[i].text end end
+                return t
+            end
+            local function updateDropLabel()
+                if not isMulti then
+                    dropLbl.Text = cur and cur.text or "..."
+                    return
+                end
+                local labels = getSelectedTexts()
+                if #labels == 0 then
+                    dropLbl.Text = "None"
+                elseif #labels == 1 then
+                    dropLbl.Text = labels[1]
+                else
+                    dropLbl.Text = tostring(#labels) .. " selected"
+                end
+            end
+            local function fireDropdownCb()
+                if not cb then return end
+                if isMulti then
+                    cb(getSelectedIndices(), getSelectedValues(), getSelectedTexts())
+                else
+                    cb(cur and cur.text, cur and cur.value, curIdx)
+                end
+            end
+
+            local function openList()
+                local h = math.min(#list * 26 + 4, 150)
+                listFrame.Size = UDim2.new(1,-10,0,h)
+                for _, c in ipairs(listScroll:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+                for i, item in ipairs(list) do
+                    local btn = Instance.new("TextButton", listScroll)
+                    local isActive = isMulti and selected[i] or (i == curIdx)
+                    btn.Size = UDim2.new(1,-4,0,24); btn.LayoutOrder = i; btn.BackgroundColor3 = isActive and Color3.fromRGB(0,40,80) or C.panel
+                    btn.BorderSizePixel = 0; btn.Text = ""; btn.Font = Enum.Font.GothamBold; btn.TextSize = 10
+                    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
+                    local lbl = Instance.new("TextLabel", btn)
+                    lbl.Size = UDim2.new(1, isMulti and -28 or -8, 1,0); lbl.Position = UDim2.new(0,6,0,0); lbl.BackgroundTransparency = 1; lbl.TextColor3 = C.text
+                    lbl.Text = item.text; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextTruncate = Enum.TextTruncate.AtEnd
+                    if isMulti then
+                        local chk = Instance.new("Frame", btn)
+                        chk.Size = UDim2.new(0,14,0,14); chk.Position = UDim2.new(1,-18,0.5,-7)
+                        chk.BackgroundColor3 = selected[i] and C.accent or C.border; chk.BorderSizePixel = 0
+                        Instance.new("UICorner", chk).CornerRadius = UDim.new(0,3)
+                        local tick = Instance.new("TextLabel", chk)
+                        tick.Size = UDim2.new(1,0,1,0); tick.BackgroundTransparency = 1
+                        tick.Text = "✓"; tick.TextColor3 = Color3.fromRGB(255,255,255)
+                        tick.Font = Enum.Font.GothamBold; tick.TextSize = 9; tick.Visible = selected[i]
+                    end
+                    btn.MouseButton1Click:Connect(function()
+                        if isMulti then
+                            selected[i] = not selected[i]
+                            updateDropLabel()
+                            fireDropdownCb()
+                            openList()
+                        else
+                            curIdx = i; cur = list[i]; updateDropLabel(); listFrame.Visible = false
+                            fireDropdownCb()
+                        end
+                    end)
+                end
+                refreshDropdownCanvas()
+                listFrame.Visible = true
+            end
+            dropBtn.MouseButton1Click:Connect(function() listFrame.Visible = not listFrame.Visible; if listFrame.Visible then openList() end end)
+            updateDropLabel()
+
+            return {
+                Set = function(v)
+                    if isMulti then
+                        for i = 1, #list do selected[i] = false end
+                        for _, idx in ipairs(type(v) == "table" and v or {}) do if idx >= 1 and idx <= #list then selected[idx] = true end end
+                    else
+                        curIdx = math.clamp(tonumber(v) or 1, 1, math.max(1, #list)); cur = list[curIdx]
+                    end
+                    updateDropLabel()
+                end,
+                Get = function()
+                    if isMulti then return getSelectedIndices(), getSelectedValues(), getSelectedTexts() end
+                    return curIdx, cur and cur.value, cur and cur.text
+                end
+            }
+        end
+
+        -- Keybind: defaultKey = Enum.KeyCode.E or "E", cb(keyCode) when key is pressed
+        local function keyCodeToName(k)
+            if type(k) == "string" then return k end
+            if type(k) == "userdata" and k.Name then return k.Name end
+            return "None"
+        end
+        function T:Keybind(label, desc, defaultKey, cb)
+            order = order + 1
+            local currentKey = (type(defaultKey) == "userdata" and defaultKey) or Enum.KeyCode[defaultKey] or Enum.KeyCode.Unknown
+            local listening = false
+
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,48); Card.BackgroundColor3 = C.card; Card.BorderSizePixel = 0; Card.LayoutOrder = order
+            Instance.new("UICorner", Card).CornerRadius = UDim.new(0,10)
+            Instance.new("UIStroke", Card).Color = C.border
+            local nL = Instance.new("TextLabel", Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-100,0,18); nL.Position = UDim2.new(0,14,0,6)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = C.text; nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left
+            local dL = Instance.new("TextLabel", Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-100,0,12); dL.Position = UDim2.new(0,14,0,26)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub; dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+            local keyBtn = Instance.new("TextButton", Card)
+            keyBtn.Size = UDim2.new(0,80,0,22); keyBtn.Position = UDim2.new(1,-86,0.5,-11)
+            keyBtn.BackgroundColor3 = C.panel; keyBtn.BorderSizePixel = 0; keyBtn.Text = keyCodeToName(currentKey)
+            keyBtn.TextColor3 = C.accent; keyBtn.Font = Enum.Font.GothamBold; keyBtn.TextSize = 10
+            Instance.new("UICorner", keyBtn).CornerRadius = UDim.new(0,6)
+
+            keyBtn.MouseButton1Click:Connect(function()
+                listening = true; keyBtn.Text = "..."
+                local conn; conn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+                    if gameProcessed then return end
+                    if input.UserInputType == Enum.UserInputType.Keyboard then
+                        currentKey = input.KeyCode
+                        keyBtn.Text = keyCodeToName(currentKey)
+                        listening = false; conn:Disconnect()
+                        if cb then cb(currentKey) end
+                    end
+                end)
+                task.delay(5, function() if listening then keyBtn.Text = keyCodeToName(currentKey); listening = false; conn:Disconnect() end end)
+            end)
+
+            return { Set = function(k) currentKey = type(k)=="userdata" and k or Enum.KeyCode[k] or Enum.KeyCode.Unknown; keyBtn.Text = keyCodeToName(currentKey) end, Get = function() return currentKey end }
+        end
+
+        -- Input: single-line text, cb(text) on FocusLost (enter or click away)
+        function T:Input(label, desc, placeholder, defaultText, cb)
+            order = order + 1
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,52); Card.BackgroundColor3 = C.card; Card.BorderSizePixel = 0; Card.LayoutOrder = order
+            Instance.new("UICorner", Card).CornerRadius = UDim.new(0,10)
+            Instance.new("UIStroke", Card).Color = C.border
+            local nL = Instance.new("TextLabel", Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-20,0,18); nL.Position = UDim2.new(0,14,0,6)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = C.text; nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left
+            local dL = Instance.new("TextLabel", Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-20,0,10); dL.Position = UDim2.new(0,14,0,24)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub; dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+            local box = Instance.new("TextBox", Card)
+            box.Size = UDim2.new(1,-28,0,20); box.Position = UDim2.new(0,14,0,36)
+            box.BackgroundColor3 = C.panel; box.BorderSizePixel = 0; box.TextColor3 = C.text; box.PlaceholderColor3 = C.sub
+            box.PlaceholderText = placeholder or ""; box.Text = defaultText or ""; box.Font = Enum.Font.Gotham; box.TextSize = 10; box.ClearTextOnFocus = false
+            Instance.new("UICorner", box).CornerRadius = UDim.new(0,4)
+            Instance.new("UIPadding", box).PaddingLeft = UDim.new(0,6)
+            box.FocusLost:Connect(function() if cb then cb(box.Text) end end)
+            return { Set = function(s) box.Text = tostring(s) end, Get = function() return box.Text end }
+        end
+
+        -- ColorPicker: defaultColor = Color3, cb(color) when changed
+        function T:ColorPicker(label, desc, defaultColor, cb)
+            order = order + 1
+            local current = defaultColor or C.accent
+
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,48); Card.BackgroundColor3 = C.card; Card.BorderSizePixel = 0; Card.LayoutOrder = order
+            Instance.new("UICorner", Card).CornerRadius = UDim.new(0,10)
+            Instance.new("UIStroke", Card).Color = C.border
+            local nL = Instance.new("TextLabel", Card)
+            nL.Text = label; nL.Size = UDim2.new(1,-70,0,18); nL.Position = UDim2.new(0,14,0,6)
+            nL.BackgroundTransparency = 1; nL.TextColor3 = C.text; nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left
+            local dL = Instance.new("TextLabel", Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,-70,0,12); dL.Position = UDim2.new(0,14,0,26)
+            dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub; dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left
+            local colorBtn = Instance.new("TextButton", Card)
+            colorBtn.Size = UDim2.new(0,36,0,28); colorBtn.Position = UDim2.new(1,-44,0.5,-14)
+            colorBtn.BackgroundColor3 = current; colorBtn.BorderSizePixel = 0; colorBtn.Text = ""
+            Instance.new("UICorner", colorBtn).CornerRadius = UDim.new(0,6)
+            Instance.new("UIStroke", colorBtn).Color = C.border
+
+            -- Simple hue strip + picker (optional: full RGB would need more UI)
+            local pickerOpen = false
+            local pickerFrame = Instance.new("Frame", page)
+            pickerFrame.Size = UDim2.new(1,-10,0,24); pickerFrame.BackgroundColor3 = C.card; pickerFrame.BorderSizePixel = 0; pickerFrame.Visible = false; pickerFrame.ClipsDescendants = true
+            pickerFrame.LayoutOrder = order + 500
+            Instance.new("UICorner", pickerFrame).CornerRadius = UDim.new(0,6)
+            local hueGradient = Instance.new("Frame", pickerFrame)
+            hueGradient.Size = UDim2.new(1,-12,1,-8); hueGradient.Position = UDim2.new(0,6,0,4); hueGradient.BorderSizePixel = 0
+            local hueUIGrad = Instance.new("UIGradient", hueGradient)
+            hueUIGrad.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0,Color3.fromRGB(255,0,0)), ColorSequenceKeypoint.new(0.17,Color3.fromRGB(255,255,0)), ColorSequenceKeypoint.new(0.33,Color3.fromRGB(0,255,0)), ColorSequenceKeypoint.new(0.5,Color3.fromRGB(0,255,255)), ColorSequenceKeypoint.new(0.67,Color3.fromRGB(0,0,255)), ColorSequenceKeypoint.new(0.83,Color3.fromRGB(255,0,255)), ColorSequenceKeypoint.new(1,Color3.fromRGB(255,0,0)) })
+            local hueKnob = Instance.new("Frame", hueGradient)
+            hueKnob.Size = UDim2.new(0,12,0,16); hueKnob.Position = UDim2.new(0,0,0.5,-8); hueKnob.BackgroundColor3 = Color3.fromRGB(255,255,255); hueKnob.BorderSizePixel = 0
+            Instance.new("UICorner", hueKnob).CornerRadius = UDim.new(0,2)
+            Instance.new("UIStroke", hueKnob).Color = C.text
+            local hueDragging = false
+            local function updateColorFromHue(x)
+                local p = math.clamp((x - hueGradient.AbsolutePosition.X) / hueGradient.AbsoluteSize.X, 0, 1)
+                current = Color3.fromHSV(p, 0.8, 1)
+                colorBtn.BackgroundColor3 = current
+                hueKnob.Position = UDim2.new(p, -6, 0.5, -8)
+                if cb then cb(current) end
+            end
+            hueGradient.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then hueDragging = true; updateColorFromHue(i.Position.X) end end)
+            UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then hueDragging = false end end)
+            UserInputService.InputChanged:Connect(function(i) if hueDragging and i.UserInputType == Enum.UserInputType.MouseMovement then updateColorFromHue(i.Position.X) end end)
+
+            colorBtn.MouseButton1Click:Connect(function()
+                pickerOpen = not pickerOpen
+                pickerFrame.Visible = pickerOpen
+            end)
+
+            return { Set = function(c) current = c; colorBtn.BackgroundColor3 = c end, Get = function() return current end }
+        end
+
+        function T:Separator()
+            order = order + 1
+            local f = Instance.new("Frame", page)
+            f.Size = UDim2.new(1,-10,0,8); f.BackgroundTransparency = 1; f.LayoutOrder = order
+            local line = Instance.new("Frame", f)
+            line.Size = UDim2.new(1,0,0,1); line.Position = UDim2.new(0,0,0.5,0); line.BackgroundColor3 = C.border; line.BorderSizePixel = 0
+        end
+
+        function T:Paragraph(txt)
+            order = order + 1
+            local f = Instance.new("Frame", page)
+            f.Size = UDim2.new(1,-10,0,0); f.AutomaticSize = Enum.AutomaticSize.Y; f.BackgroundTransparency = 1; f.LayoutOrder = order
+            local l = Instance.new("TextLabel", f)
+            l.Size = UDim2.new(1,0,0,0); l.AutomaticSize = Enum.AutomaticSize.Y
+            l.BackgroundTransparency = 1; l.TextColor3 = C.sub; l.Font = Enum.Font.Gotham; l.TextSize = 10
+            l.TextXAlignment = Enum.TextXAlignment.Left; l.TextWrapped = true; l.Text = txt or ""
+            return { Set = function(s) l.Text = tostring(s) end }
+        end
+
+        -- MultiSelect: options = { "A", "B" } or { {text="A", value=1}, ... }, defaultIndices = { 1, 3 }, cb(selectedIndices, selectedValues)
+        function T:MultiSelect(label, desc, options, defaultIndices, cb)
+            order = order + 1
+            local opts = options or {}
+            local list = {}
+            for i, v in ipairs(opts) do
+                if type(v) == "table" then list[i] = { text = v.text or v[1], value = v.value ~= nil and v.value or v[2] or v } else list[i] = { text = tostring(v), value = v } end
+            end
+            local selected = {}
+            for _, idx in ipairs(defaultIndices or {}) do
+                if idx >= 1 and idx <= #list then selected[idx] = true end
+            end
+
+            local Card = Instance.new("Frame", page)
+            Card.Size = UDim2.new(1,-10,0,0); Card.BackgroundColor3 = C.card; Card.BorderSizePixel = 0; Card.LayoutOrder = order; Card.AutomaticSize = Enum.AutomaticSize.Y
+            Instance.new("UICorner", Card).CornerRadius = UDim.new(0,10)
+            Instance.new("UIStroke", Card).Color = C.border
+            local pad = Instance.new("UIPadding", Card)
+            pad.PaddingLeft = UDim.new(0,12); pad.PaddingRight = UDim.new(0,12); pad.PaddingTop = UDim.new(0,8); pad.PaddingBottom = UDim.new(0,8)
+            local cardLayout = Instance.new("UIListLayout", Card)
+            cardLayout.Padding = UDim.new(0,6); cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+            local nL = Instance.new("TextLabel", Card)
+            nL.Text = label; nL.Size = UDim2.new(1,0,0,18); nL.BackgroundTransparency = 1; nL.TextColor3 = C.text; nL.Font = Enum.Font.GothamBold; nL.TextSize = 12; nL.TextXAlignment = Enum.TextXAlignment.Left; nL.LayoutOrder = 1
+            local dL = Instance.new("TextLabel", Card)
+            dL.Text = desc or ""; dL.Size = UDim2.new(1,0,0,12); dL.BackgroundTransparency = 1; dL.TextColor3 = C.sub; dL.Font = Enum.Font.Gotham; dL.TextSize = 9; dL.TextXAlignment = Enum.TextXAlignment.Left; dL.LayoutOrder = 2
+
+            local btnRow = Instance.new("Frame", Card)
+            btnRow.Size = UDim2.new(1,0,0,22); btnRow.BackgroundTransparency = 1; btnRow.LayoutOrder = 3
+            local allBtn = Instance.new("TextButton", btnRow)
+            allBtn.Size = UDim2.new(0,70,1,0); allBtn.Position = UDim2.new(0,0,0,0); allBtn.BackgroundColor3 = C.panel; allBtn.BorderSizePixel = 0; allBtn.Text = "Select All"; allBtn.TextColor3 = C.accent; allBtn.Font = Enum.Font.GothamBold; allBtn.TextSize = 9
+            Instance.new("UICorner", allBtn).CornerRadius = UDim.new(0,4)
+            local clearBtn = Instance.new("TextButton", btnRow)
+            clearBtn.Size = UDim2.new(0,60,1,0); clearBtn.Position = UDim2.new(0,76,0,0); clearBtn.BackgroundColor3 = C.panel; clearBtn.BorderSizePixel = 0; clearBtn.Text = "Clear"; clearBtn.TextColor3 = C.sub; clearBtn.Font = Enum.Font.GothamBold; clearBtn.TextSize = 9
+            Instance.new("UICorner", clearBtn).CornerRadius = UDim.new(0,4)
+
+            local listScroll = Instance.new("ScrollingFrame", Card)
+            listScroll.Size = UDim2.new(1,0,0,120); listScroll.BackgroundColor3 = C.panel; listScroll.BorderSizePixel = 0; listScroll.ScrollBarThickness = 3; listScroll.ScrollBarImageColor3 = C.accent; listScroll.LayoutOrder = 4
+            listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            Instance.new("UICorner", listScroll).CornerRadius = UDim.new(0,6)
+            local listLayout = Instance.new("UIListLayout", listScroll)
+            listLayout.Padding = UDim.new(0,2); listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            local listPad = Instance.new("UIPadding", listScroll)
+            listPad.PaddingLeft = UDim.new(0,4); listPad.PaddingRight = UDim.new(0,4)
+
+            local function getIndices()
+                local t = {}
+                for i = 1, #list do if selected[i] then t[#t+1] = i end end
+                return t
+            end
+            local function getValues()
+                local t = {}
+                for i = 1, #list do if selected[i] then t[#t+1] = list[i].value end end
+                return t
+            end
+            local function fireCb()
+                if cb then cb(getIndices(), getValues()) end
+            end
+            local function rebuildList()
+                for _, c in ipairs(listScroll:GetChildren()) do if c:IsA("TextButton") or c:IsA("Frame") then c:Destroy() end end
+                for i, item in ipairs(list) do
+                    local row = Instance.new("TextButton", listScroll)
+                    row.Size = UDim2.new(1,-4,0,24); row.LayoutOrder = i; row.BackgroundColor3 = selected[i] and Color3.fromRGB(0,45,25) or Color3.fromRGB(12,16,24); row.BorderSizePixel = 0; row.Text = ""
+                    Instance.new("UICorner", row).CornerRadius = UDim.new(0,4)
+                    local lbl = Instance.new("TextLabel", row)
+                    lbl.Size = UDim2.new(1,-28,1,0); lbl.Position = UDim2.new(0,6,0,0); lbl.BackgroundTransparency = 1; lbl.Text = item.text; lbl.TextColor3 = selected[i] and C.green or C.text
+                    lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextTruncate = Enum.TextTruncate.AtEnd
+                    local chk = Instance.new("Frame", row)
+                    chk.Size = UDim2.new(0,14,0,14); chk.Position = UDim2.new(1,-18,0.5,-7); chk.BackgroundColor3 = selected[i] and C.green or C.border; chk.BorderSizePixel = 0
+                    Instance.new("UICorner", chk).CornerRadius = UDim.new(0,3)
+                    local tick = Instance.new("TextLabel", chk); tick.Text = "✓"; tick.Size = UDim2.new(1,0,1,0); tick.BackgroundTransparency = 1; tick.TextColor3 = Color3.fromRGB(255,255,255); tick.Font = Enum.Font.GothamBold; tick.TextSize = 9; tick.Visible = selected[i]
+                    row.MouseButton1Click:Connect(function()
+                        selected[i] = not selected[i]
+                        rebuildList()
+                        fireCb()
+                    end)
+                end
+            end
+            allBtn.MouseButton1Click:Connect(function()
+                for i = 1, #list do selected[i] = true end
+                rebuildList()
+                fireCb()
+            end)
+            clearBtn.MouseButton1Click:Connect(function()
+                for i = 1, #list do selected[i] = false end
+                rebuildList()
+                fireCb()
+            end)
+            rebuildList()
+
+            return {
+                Set = function(indices)
+                    for i = 1, #list do selected[i] = false end
+                    for _, idx in ipairs(indices or {}) do if idx >= 1 and idx <= #list then selected[idx] = true end end
+                    rebuildList()
+                end,
+                Get = function() return getIndices(), getValues() end
+            }
+        end
+
+        return T
+    end
+
+    -- ============================================================
+    --  BUILT-IN: Chat Tab (optimized: cap seen keys)
+    -- ============================================================
+    function Win:ChatTab(firebaseUrl)
+        firebaseUrl = firebaseUrl or "https://anipixels-chat-default-rtdb.firebaseio.com/chat"
+        local T = self:Tab("💬","Chat")
+
+        local InfoCard = Instance.new("Frame", T._page)
+        InfoCard.Size = UDim2.new(1,-10,0,40); InfoCard.BackgroundColor3 = Color3.fromRGB(30,30,45)
+        InfoCard.BorderSizePixel = 0; InfoCard.LayoutOrder = 1
+        Instance.new("UICorner",InfoCard).CornerRadius = UDim.new(0,8)
+        local InfoLbl = Instance.new("TextLabel",InfoCard)
+        InfoLbl.Size = UDim2.new(1,-10,1,0); InfoLbl.Position = UDim2.new(0,8,0,0)
+        InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
+        InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 8; InfoLbl.TextWrapped = true
+        InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
+        InfoLbl.Text = "💬 Cross-server chat · Images: paste a direct image URL (Discord: Copy Image Link). Roblox cannot read raw clipboard photos. 📋 = clipboard."
+
+        local FeedOuter = Instance.new("Frame", T._page)
+        FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
+        FeedOuter.BorderSizePixel = 0; FeedOuter.LayoutOrder = 2; FeedOuter.ClipsDescendants = true
+        Instance.new("UICorner",FeedOuter).CornerRadius = UDim.new(0,10)
+        Instance.new("UIStroke",FeedOuter).Color = C.border
+
+        local FeedScroll = Instance.new("ScrollingFrame",FeedOuter)
+        FeedScroll.Size = UDim2.new(1,0,1,0); FeedScroll.BackgroundTransparency = 1
+        FeedScroll.BorderSizePixel = 0; FeedScroll.ScrollBarThickness = 3
+        FeedScroll.ScrollBarImageColor3 = C.accent; FeedScroll.CanvasSize = UDim2.new(0,0,0,0)
+        FeedScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        local FeedLayout = Instance.new("UIListLayout",FeedScroll)
+        FeedLayout.SortOrder = Enum.SortOrder.LayoutOrder; FeedLayout.Padding = UDim.new(0,2)
+        local FeedPad = Instance.new("UIPadding",FeedScroll)
+        FeedPad.PaddingLeft = UDim.new(0,6); FeedPad.PaddingRight = UDim.new(0,6)
+
+        local function addLine(user, text, server, isSystem, imageUrl)
+            local row = Instance.new("Frame",FeedScroll)
+            row.Size = UDim2.new(1,0,0,0); row.AutomaticSize = Enum.AutomaticSize.Y
+            row.BackgroundTransparency = 1; row.LayoutOrder = #FeedScroll:GetChildren()
+            Instance.new("UIListLayout", row).Padding = UDim.new(0,4)
+
+            local lbl = Instance.new("TextLabel",row)
+            lbl.Size = UDim2.new(1,0,0,0); lbl.AutomaticSize = Enum.AutomaticSize.Y
+            lbl.BackgroundTransparency = 1; lbl.TextWrapped = true
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.Font = Enum.Font.Code; lbl.TextSize = 10
+            if isSystem then
+                lbl.TextColor3 = C.sub; lbl.Text = "— "..tostring(text or "")
+            else
+                lbl.TextColor3 = C.text
+                local cap = tostring(text or "")
+                if (cap == "" or cap == "📷") and imageUrl and imageUrl ~= "" then cap = "📷 image" end
+                lbl.Text = "["..tostring(server or "?").."] "..tostring(user or "Anon")..": "..cap
+            end
+
+            if not isSystem and type(imageUrl) == "string" and imageUrl ~= "" then
+                local imgHolder = Instance.new("Frame", row)
+                imgHolder.Size = UDim2.new(1,0,0,140)
+                imgHolder.BackgroundColor3 = Color3.fromRGB(18,18,28)
+                imgHolder.BorderSizePixel = 0
+                Instance.new("UICorner", imgHolder).CornerRadius = UDim.new(0,8)
+                local ist = Instance.new("UIStroke", imgHolder); ist.Color = C.border; ist.Thickness = 1
+                local img = Instance.new("ImageLabel", imgHolder)
+                img.BackgroundTransparency = 1
+                img.Size = UDim2.new(1,-8,1,-8)
+                img.Position = UDim2.new(0,4,0,4)
+                img.ScaleType = Enum.ScaleType.Fit
+                img.Image = imageUrl
+                local hint = Instance.new("TextLabel", row)
+                hint.Size = UDim2.new(1,0,0,0); hint.AutomaticSize = Enum.AutomaticSize.Y
+                hint.BackgroundTransparency = 1
+                hint.TextColor3 = C.sub
+                hint.Font = Enum.Font.Gotham
+                hint.TextSize = 8
+                hint.TextXAlignment = Enum.TextXAlignment.Left
+                hint.TextWrapped = true
+                local short = imageUrl
+                if #short > 220 then short = short:sub(1, 217) .. "…" end
+                hint.Text = "🔗 "..short
+            end
+
+            task.defer(function()
+                FeedScroll.CanvasPosition = Vector2.new(0, FeedLayout.AbsoluteContentSize.Y)
+            end)
+        end
+
+        local InputCard = Instance.new("Frame",T._page)
+        InputCard.Size = UDim2.new(1,-10,0,48); InputCard.BackgroundColor3 = C.card
+        InputCard.BorderSizePixel = 0; InputCard.LayoutOrder = 3
+        Instance.new("UICorner",InputCard).CornerRadius = UDim.new(0,10)
+        Instance.new("UIStroke",InputCard).Color = C.border
+
+        local ChatInput = Instance.new("TextBox",InputCard)
+        ChatInput.Size = UDim2.new(1,-108,1,-8); ChatInput.Position = UDim2.new(0,8,0,4)
+        ChatInput.BackgroundColor3 = Color3.fromRGB(18,18,26); ChatInput.BorderSizePixel = 0
+        ChatInput.TextColor3 = C.text; ChatInput.Font = Enum.Font.Gotham; ChatInput.TextSize = 10
+        ChatInput.PlaceholderText = "Message or image URL…"; ChatInput.Text = ""
+        ChatInput.ClearTextOnFocus = false; ChatInput.MultiLine = true
+        ChatInput.ClipsDescendants = true
+        Instance.new("UICorner",ChatInput).CornerRadius = UDim.new(0,6)
+        Instance.new("UIPadding",ChatInput).PaddingLeft = UDim.new(0,6)
+
+        local PasteBtn = Instance.new("TextButton",InputCard)
+        PasteBtn.Size = UDim2.new(0,40,1,-8); PasteBtn.Position = UDim2.new(1,-96,0,4)
+        PasteBtn.BackgroundColor3 = Color3.fromRGB(35,40,60); PasteBtn.BorderSizePixel = 0
+        PasteBtn.TextColor3 = C.text; PasteBtn.Font = Enum.Font.GothamBold
+        PasteBtn.TextSize = 16; PasteBtn.Text = "📋"
+        Instance.new("UICorner",PasteBtn).CornerRadius = UDim.new(0,6)
+
+        local SendBtn = Instance.new("TextButton",InputCard)
+        SendBtn.Size = UDim2.new(0,44,1,-8); SendBtn.Position = UDim2.new(1,-50,0,4)
+        SendBtn.BackgroundColor3 = C.accent; SendBtn.BorderSizePixel = 0
+        SendBtn.TextColor3 = Color3.fromRGB(255,255,255); SendBtn.Font = Enum.Font.GothamBold
+        SendBtn.TextSize = 10; SendBtn.Text = "Send"
+        Instance.new("UICorner",SendBtn).CornerRadius = UDim.new(0,6)
+
+        local OnlineCard = Instance.new("Frame",T._page)
+        OnlineCard.Size = UDim2.new(1,-10,0,20); OnlineCard.BackgroundTransparency = 1
+        OnlineCard.LayoutOrder = 4
+        local OnlineLbl = Instance.new("TextLabel",OnlineCard)
+        OnlineLbl.Size = UDim2.new(1,0,1,0); OnlineLbl.BackgroundTransparency = 1
+        OnlineLbl.TextColor3 = C.sub; OnlineLbl.Font = Enum.Font.Gotham; OnlineLbl.TextSize = 9
+        OnlineLbl.TextXAlignment = Enum.TextXAlignment.Left
+        OnlineLbl.Text = "🟡 Connecting..."
+
+        local function shortSrv()
+            local j = game.JobId
+            return j ~= "" and j:sub(1,5) or "local"
+        end
+
+        local function doSend(raw)
+            local trimmed = type(raw) == "string" and raw:match("^%s*(.-)%s*$") or ""
+            if trimmed == "" then return end
+            local imageUrl = nil
+            local bodyText = trimmed
+            local firstLine, rest = trimmed:match("^([^\r\n]+)[\r\n]+(.+)$")
+            if firstLine and rest and isImageLikeUrl(firstLine) then
+                imageUrl = firstLine:match("^%s*(.-)%s*$")
+                bodyText = rest:match("^%s*(.-)%s*$") or ""
+                if bodyText == "" then bodyText = "📷" end
+            elseif isImageLikeUrl(trimmed) then
+                imageUrl = trimmed
+                bodyText = "📷"
+            end
+            local payloadTbl = {
+                user   = "Anonymous",
+                server = shortSrv(),
+                text   = bodyText,
+                time   = os.time(),
+            }
+            if imageUrl then payloadTbl.imageUrl = imageUrl end
+            local payload = HS:JSONEncode(payloadTbl)
+            local ok, res = pcall(httpRequest, {
+                Url     = firebaseUrl..".json",
+                Method  = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body    = payload,
+            })
+            if not ok or not res then
+                addLine(nil, "❌ Send failed: "..tostring(res), nil, true)
+            elseif res.StatusCode and res.StatusCode >= 400 then
+                addLine(nil, "❌ HTTP "..res.StatusCode, nil, true)
+            end
+        end
+
+        PasteBtn.MouseButton1Click:Connect(function()
+            local c = getClipboardText()
+            if not c then
+                addLine(nil, "Clipboard empty or executor has no getclipboard()", nil, true)
+                return
+            end
+            if isImageLikeUrl(c) then
+                ChatInput.Text = c
+                return
+            end
+            local cur = ChatInput.Text
+            if cur == "" or cur:match("^%s*$") then
+                ChatInput.Text = c
+            elseif not cur:find(c, 1, true) then
+                ChatInput.Text = cur .. (cur:match("%s$") and "" or " ") .. c
+            end
+        end)
+
+        UserInputService.InputBegan:Connect(function(input, gameProcessed)
+            if gameProcessed then return end
+            if input.KeyCode ~= Enum.KeyCode.V then return end
+            if not (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then return end
+            if not ChatInput:IsFocused() then return end
+            task.defer(function()
+                local c = getClipboardText()
+                if not c or not isImageLikeUrl(c) then return end
+                local cur = ChatInput.Text
+                if cur == "" or cur:match("^%s*$") then
+                    ChatInput.Text = c
+                elseif not cur:find(c, 1, true) then
+                    ChatInput.Text = cur .. (cur:match("%s$") and "" or " ") .. c
+                end
+            end)
+        end)
+
+        SendBtn.MouseButton1Click:Connect(function()
+            local txt = ChatInput.Text:match("^%s*(.-)%s*$")
+            if txt == "" then return end
+            doSend(ChatInput.Text); ChatInput.Text = ""
+        end)
+        ChatInput.FocusLost:Connect(function(enter)
+            if enter then
+                local txt = ChatInput.Text:match("^%s*(.-)%s*$")
+                if txt ~= "" then doSend(ChatInput.Text); ChatInput.Text = "" end
+            end
+        end)
+
+        -- poll (cap seen to 500 keys to avoid unbounded growth)
+        local SEEN_CAP = 500
+        local seenKeys = {}
+        local seenOrder = {}
+
+        local function pruneSeen()
+            while #seenOrder > SEEN_CAP do
+                local k = table.remove(seenOrder, 1)
+                seenKeys[k] = nil
+            end
+        end
+
+        task.spawn(function()
+            _G.NexusLib_ChatGen = (_G.NexusLib_ChatGen or 0) + 1
+            local myGen = _G.NexusLib_ChatGen
+
+            local function fetch()
+                local ok, res = pcall(httpRequest, {
+                    Url     = firebaseUrl..".json",
+                    Method  = "GET",
+                    Headers = { ["Accept"] = "application/json" },
+                })
+                if not ok or not res or not res.Body or res.Body == "" or res.Body == "null" then return false end
+                local ok2, data = pcall(HS.JSONDecode, HS, res.Body)
+                if not ok2 or type(data) ~= "table" then return false end
+                local msgs = {}
+                for key, v in pairs(data) do
+                    if type(v) == "table" and v.time and not seenKeys[key] then
+                        local iu = v.imageUrl
+                        if type(iu) ~= "string" or iu == "" then
+                            local tx = tostring(v.text or "")
+                            if isImageLikeUrl(tx) then iu = tx:match("^%s*(.-)%s*$") end
+                        end
+                        table.insert(msgs, {
+                            key = key, user = v.user, server = v.server, text = v.text, time = v.time,
+                            imageUrl = (type(iu) == "string" and iu ~= "") and iu or nil,
+                        })
+                    end
+                end
+                table.sort(msgs, function(a,b) return a.time < b.time end)
+                for i = 1, #msgs do
+                    local m = msgs[i]
+                    seenKeys[m.key] = true
+                    table.insert(seenOrder, m.key)
+                    addLine(m.user, m.text, m.server, false, m.imageUrl)
+                end
+                pruneSeen()
+                return #msgs > 0
+            end
+
+            fetch()
+            OnlineLbl.Text = "🟢 Live"
+
+            while true do
+                if _G.NexusLib_ChatGen ~= myGen then break end
+                task.wait(3)
+                if _G.NexusLib_ChatGen ~= myGen then break end
+                fetch()
+            end
+        end)
+    end
+
+    -- ============================================================
+    --  BUILT-IN: List Tab (game-agnostic; data via callbacks)
+    -- ============================================================
+    -- opts: statusTitle, getStatusText, getChainText, isActive, onToggle,
+    --       thresholdLabel, thresholdMin, thresholdMax, thresholdDefault, onThreshold,
+    --       searchPlaceholder, getListItems (filter) -> { {id, label, sublabel, selected}, ... }, onSelectItem(id, selected),
+    --       secondToggle = { label, sublabel, default, onToggle } (optional)
+    function Win:ListTab(opts)
+        opts = opts or {}
+        local T = self:Tab("📋", "List")
+        local page, layout = T._page, T._layout
+
+        -- Status card
+        local statusTitle = opts.statusTitle or "List"
+        local statusLbl = Instance.new("TextLabel", page)
+        statusLbl.Text = statusTitle
+        statusLbl.Size = UDim2.new(1,-100,0,18); statusLbl.Position = UDim2.new(0,14,0,8)
+        statusLbl.BackgroundTransparency = 1; statusLbl.TextColor3 = C.text
+        statusLbl.Font = Enum.Font.GothamBold; statusLbl.TextSize = 13; statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+        statusLbl.LayoutOrder = 1
+
+        local statusText = Instance.new("TextLabel", page)
+        statusText.Text = (opts.getStatusText and opts.getStatusText()) or "OFF"
+        statusText.Size = UDim2.new(1,-100,0,13); statusText.Position = UDim2.new(0,14,0,28)
+        statusText.BackgroundTransparency = 1; statusText.TextColor3 = C.sub
+        statusText.Font = Enum.Font.Code; statusText.TextSize = 9; statusText.TextXAlignment = Enum.TextXAlignment.Left
+        statusText.LayoutOrder = 2
+
+        local chainLbl = Instance.new("TextLabel", page)
+        chainLbl.Text = (opts.getChainText and opts.getChainText()) or "Chain: —"
+        chainLbl.Size = UDim2.new(1,-100,0,12); chainLbl.Position = UDim2.new(0,14,0,44)
+        chainLbl.BackgroundTransparency = 1; chainLbl.TextColor3 = C.green
+        chainLbl.Font = Enum.Font.Code; chainLbl.TextSize = 9; chainLbl.TextXAlignment = Enum.TextXAlignment.Left
+        chainLbl.LayoutOrder = 3
+
+        local statusCard = Instance.new("Frame", page)
+        statusCard.Size = UDim2.new(1,-10,0,70); statusCard.BackgroundColor3 = C.card
+        statusCard.BorderSizePixel = 0; statusCard.LayoutOrder = 0
+        Instance.new("UICorner", statusCard).CornerRadius = UDim.new(0,10)
+        local statusStroke = Instance.new("UIStroke", statusCard); statusStroke.Color = C.border; statusStroke.Thickness = 1
+        statusLbl.Parent = statusCard; statusLbl.Position = UDim2.new(0,14,0,8); statusLbl.Size = UDim2.new(1,-100,0,18)
+        statusText.Parent = statusCard; statusText.Position = UDim2.new(0,14,0,28); statusText.Size = UDim2.new(1,-100,0,13)
+        chainLbl.Parent = statusCard; chainLbl.Position = UDim2.new(0,14,0,44); chainLbl.Size = UDim2.new(1,-100,0,12)
+
+        local Pill = Instance.new("Frame", statusCard)
+        Pill.Size = UDim2.new(0,44,0,24); Pill.Position = UDim2.new(1,-50,0.5,-12)
+        Pill.BackgroundColor3 = C.border; Pill.BorderSizePixel = 0
+        Instance.new("UICorner", Pill).CornerRadius = UDim.new(1,0)
+        local Thumb = Instance.new("Frame", Pill)
+        Thumb.Size = UDim2.new(0,18,0,18); Thumb.Position = UDim2.new(0,3,0.5,-9)
+        Thumb.BackgroundColor3 = C.sub; Thumb.BorderSizePixel = 0
+        Instance.new("UICorner", Thumb).CornerRadius = UDim.new(1,0)
+        local mti = TweenInfo.new(0.18, Enum.EasingStyle.Quad)
+
+        local function setActive(on)
+            if opts.onToggle then opts.onToggle(on) end
+            if on then
+                TweenService:Create(Pill, mti, {BackgroundColor3 = C.green}):Play()
+                TweenService:Create(Thumb, mti, {Position = UDim2.new(0,23,0.5,-9), BackgroundColor3 = C.green}):Play()
+                statusStroke.Color = C.green; statusLbl.TextColor3 = C.green
+            else
+                TweenService:Create(Pill, mti, {BackgroundColor3 = C.border}):Play()
+                TweenService:Create(Thumb, mti, {Position = UDim2.new(0,3,0.5,-9), BackgroundColor3 = C.sub}):Play()
+                statusStroke.Color = C.border; statusLbl.TextColor3 = C.text
+            end
+            if opts.getStatusText then statusText.Text = opts.getStatusText() end
+        end
+
+        local active = opts.isActive and opts.isActive() or false
+        if active then
+            Pill.BackgroundColor3 = C.green; Thumb.Position = UDim2.new(0,23,0.5,-9); Thumb.BackgroundColor3 = C.green
+            statusStroke.Color = C.green; statusLbl.TextColor3 = C.green
+        end
+        local PillBtn = Instance.new("TextButton", Pill)
+        PillBtn.Size = UDim2.new(1,0,1,0); PillBtn.BackgroundTransparency = 1; PillBtn.Text = ""; PillBtn.ZIndex = 3
+        PillBtn.MouseButton1Click:Connect(function()
+            setActive(not (opts.isActive and opts.isActive() or false))
+            if opts.getStatusText then statusText.Text = opts.getStatusText() end
+        end)
+
+        -- Optional second toggle (e.g. Titan)
+        if opts.secondToggle and opts.secondToggle.label then
+            local st = opts.secondToggle
+            local card2 = Instance.new("Frame", page)
+            card2.Size = UDim2.new(1,-10,0,52); card2.BackgroundColor3 = C.card; card2.BorderSizePixel = 0; card2.LayoutOrder = 4
+            Instance.new("UICorner", card2).CornerRadius = UDim.new(0,12)
+            local stStroke = Instance.new("UIStroke", card2); stStroke.Color = C.border
+            local tTitle = Instance.new("TextLabel", card2)
+            tTitle.Text = st.label; tTitle.Size = UDim2.new(1,-60,0,20); tTitle.Position = UDim2.new(0,12,0,8)
+            tTitle.BackgroundTransparency = 1; tTitle.TextColor3 = C.text; tTitle.Font = Enum.Font.GothamBold; tTitle.TextSize = 11; tTitle.TextXAlignment = Enum.TextXAlignment.Left
+            local tSub = Instance.new("TextLabel", card2)
+            tSub.Text = st.sublabel or ""; tSub.Size = UDim2.new(1,-60,0,16); tSub.Position = UDim2.new(0,12,0,28)
+            tSub.BackgroundTransparency = 1; tSub.TextColor3 = C.sub; tSub.Font = Enum.Font.Gotham; tSub.TextSize = 9; tSub.TextXAlignment = Enum.TextXAlignment.Left
+            local tPill = Instance.new("Frame", card2); tPill.Size = UDim2.new(0,46,0,24); tPill.Position = UDim2.new(1,-58,0.5,-12)
+            tPill.BackgroundColor3 = C.border; tPill.BorderSizePixel = 0
+            Instance.new("UICorner", tPill).CornerRadius = UDim.new(1,0)
+            local tThumb = Instance.new("Frame", tPill); tThumb.Size = UDim2.new(0,18,0,18); tThumb.Position = UDim2.new(0,3,0.5,-9); tThumb.BackgroundColor3 = C.sub; tThumb.BorderSizePixel = 0
+            Instance.new("UICorner", tThumb).CornerRadius = UDim.new(1,0)
+            local tti = TweenInfo.new(0.2)
+            local function setTitan(on)
+                if st.onToggle then st.onToggle(on) end
+                if on then
+                    TweenService:Create(tPill, tti, {BackgroundColor3 = C.green}):Play()
+                    TweenService:Create(tThumb, tti, {Position = UDim2.new(0,25,0.5,-9), BackgroundColor3 = C.green}):Play()
+                    stStroke.Color = C.green; tTitle.TextColor3 = C.green
+                else
+                    TweenService:Create(tPill, tti, {BackgroundColor3 = C.border}):Play()
+                    TweenService:Create(tThumb, tti, {Position = UDim2.new(0,3,0.5,-9), BackgroundColor3 = C.sub}):Play()
+                    stStroke.Color = C.border; tTitle.TextColor3 = C.text
+                end
+            end
+            local secondState = st.default or false
+            if secondState then
+                tPill.BackgroundColor3 = C.green; tThumb.Position = UDim2.new(0,25,0.5,-9); tThumb.BackgroundColor3 = C.green; stStroke.Color = C.green; tTitle.TextColor3 = C.green
+            end
+            local tBtn = Instance.new("TextButton", card2); tBtn.Size = UDim2.new(1,0,1,0); tBtn.BackgroundTransparency = 1; tBtn.Text = ""; tBtn.ZIndex = 3
+            tBtn.MouseButton1Click:Connect(function()
+                secondState = not secondState
+                setTitan(secondState)
+            end)
+        end
+
+        -- Threshold slider
+        local thMin = opts.thresholdMin or 4
+        local thMax = opts.thresholdMax or 40
+        local thDefault = opts.thresholdDefault or 20
+        local thCard = Instance.new("Frame", page)
+        thCard.Size = UDim2.new(1,-10,0,58); thCard.BackgroundColor3 = C.card; thCard.BorderSizePixel = 0; thCard.LayoutOrder = 5
+        Instance.new("UICorner", thCard).CornerRadius = UDim.new(0,10)
+        Instance.new("UIStroke", thCard).Color = C.border
+        local thn = Instance.new("TextLabel", thCard)
+        thn.Text = opts.thresholdLabel or "Threshold"; thn.Size = UDim2.new(1,-80,0,18); thn.Position = UDim2.new(0,14,0,6)
+        thn.BackgroundTransparency = 1; thn.TextColor3 = C.text; thn.Font = Enum.Font.GothamBold; thn.TextSize = 12; thn.TextXAlignment = Enum.TextXAlignment.Left
+        local thv = Instance.new("TextLabel", thCard)
+        thv.Text = "x"..thDefault; thv.Size = UDim2.new(0,60,0,18); thv.Position = UDim2.new(1,-68,0,6)
+        thv.BackgroundTransparency = 1; thv.TextColor3 = C.accent; thv.Font = Enum.Font.Code; thv.TextSize = 13; thv.TextXAlignment = Enum.TextXAlignment.Right
+        local thTrack = Instance.new("Frame", thCard)
+        thTrack.Size = UDim2.new(1,-28,0,6); thTrack.Position = UDim2.new(0,14,0,42); thTrack.BackgroundColor3 = C.panel; thTrack.BorderSizePixel = 0
+        Instance.new("UICorner", thTrack).CornerRadius = UDim.new(1,0)
+        local thPct = (thDefault - thMin) / (thMax - thMin)
+        local thFill = Instance.new("Frame", thTrack); thFill.Size = UDim2.new(thPct,0,1,0); thFill.BackgroundColor3 = C.accent; thFill.BorderSizePixel = 0
+        Instance.new("UICorner", thFill).CornerRadius = UDim.new(1,0)
+        local thKnob = Instance.new("TextButton", thTrack); thKnob.Text = ""; thKnob.Size = UDim2.new(0,16,0,16); thKnob.AnchorPoint = Vector2.new(0.5,0.5)
+        thKnob.Position = UDim2.new(thPct,0,0.5,0); thKnob.BackgroundColor3 = Color3.fromRGB(255,255,255); thKnob.BorderSizePixel = 0; thKnob.ZIndex = 4
+        Instance.new("UICorner", thKnob).CornerRadius = UDim.new(1,0)
+        local thDrag = false
+        local function thApply(ix)
+            local rel = math.clamp(ix - thTrack.AbsolutePosition.X, 0, thTrack.AbsoluteSize.X)
+            local p = rel / thTrack.AbsoluteSize.X
+            local v = thMin + math.round((thMax - thMin) * p)
+            thFill.Size = UDim2.new(p,0,1,0); thKnob.Position = UDim2.new(p,0,0.5,0)
+            thv.Text = "x"..v
+            if opts.onThreshold then opts.onThreshold(v) end
+        end
+        thKnob.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then thDrag = true end end)
+        UserInputService.InputChanged:Connect(function(i) if thDrag and i.UserInputType == Enum.UserInputType.MouseMovement then thApply(i.Position.X) end end)
+        UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then thDrag = false end end)
+        thTrack.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then thApply(i.Position.X) end end)
+
+        -- Search + list
+        local searchPlaceholder = opts.searchPlaceholder or "Search..."
+        local searchCard = Instance.new("Frame", page)
+        searchCard.Size = UDim2.new(1,-10,0,38); searchCard.BackgroundColor3 = C.card; searchCard.BorderSizePixel = 0; searchCard.LayoutOrder = 6
+        Instance.new("UICorner", searchCard).CornerRadius = UDim.new(0,10)
+        Instance.new("UIStroke", searchCard).Color = C.border
+        local searchIcon = Instance.new("TextLabel", searchCard); searchIcon.Text = "🔍"; searchIcon.Size = UDim2.new(0,30,1,0); searchIcon.Position = UDim2.new(0,4,0,0)
+        searchIcon.BackgroundTransparency = 1; searchIcon.TextSize = 14; searchIcon.Font = Enum.Font.GothamBold; searchIcon.TextXAlignment = Enum.TextXAlignment.Center
+        local searchBox = Instance.new("TextBox", searchCard)
+        searchBox.Size = UDim2.new(1,-70,1,-10); searchBox.Position = UDim2.new(0,34,0,5)
+        searchBox.BackgroundTransparency = 1; searchBox.TextColor3 = C.text; searchBox.PlaceholderText = searchPlaceholder; searchBox.PlaceholderColor3 = C.sub
+        searchBox.Font = Enum.Font.Gotham; searchBox.TextSize = 11; searchBox.BorderSizePixel = 0; searchBox.TextXAlignment = Enum.TextXAlignment.Left; searchBox.ClearTextOnFocus = false
+        local refreshBtn = Instance.new("TextButton", searchCard); refreshBtn.Text = "↻"; refreshBtn.Size = UDim2.new(0,28,0,22); refreshBtn.Position = UDim2.new(1,-32,0.5,-11)
+        refreshBtn.BackgroundColor3 = Color3.fromRGB(0,70,35); refreshBtn.TextColor3 = C.green; refreshBtn.Font = Enum.Font.GothamBold; refreshBtn.TextSize = 13; refreshBtn.BorderSizePixel = 0
+        Instance.new("UICorner", refreshBtn).CornerRadius = UDim.new(0,6)
+
+        local listCard = Instance.new("Frame", page)
+        listCard.Size = UDim2.new(1,-10,0,200); listCard.BackgroundColor3 = C.card; listCard.BorderSizePixel = 0; listCard.LayoutOrder = 7; listCard.ClipsDescendants = true
+        Instance.new("UICorner", listCard).CornerRadius = UDim.new(0,10)
+        Instance.new("UIStroke", listCard).Color = C.border
+        local listScroll = Instance.new("ScrollingFrame", listCard)
+        listScroll.Size = UDim2.new(1,-6,1,-6); listScroll.Position = UDim2.new(0,3,0,3)
+        listScroll.BackgroundTransparency = 1; listScroll.BorderSizePixel = 0
+        listScroll.ScrollBarThickness = 3; listScroll.ScrollBarImageColor3 = C.green
+        listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; listScroll.CanvasSize = UDim2.new(0,0,0,0)
+        local listLayout = Instance.new("UIListLayout", listScroll); listLayout.Padding = UDim.new(0,3); listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local function buildList(filter)
+            filter = filter or ""
+            for _, c in pairs(listScroll:GetChildren()) do
+                if c:IsA("TextButton") or c:IsA("Frame") then c:Destroy() end
+            end
+            local items = (opts.getListItems and opts.getListItems(filter)) or {}
+            for i, item in ipairs(items) do
+                local id = item.id or item.label
+                local label = item.label or id
+                local sublabel = item.sublabel or ""
+                local selected = item.selected
+                local btn = Instance.new("TextButton", listScroll)
+                btn.Size = UDim2.new(1,-4,0,28); btn.LayoutOrder = i
+                btn.BackgroundColor3 = selected and Color3.fromRGB(0,55,28) or Color3.fromRGB(10,15,22)
+                btn.TextColor3 = C.text; btn.BorderSizePixel = 0; btn.Font = Enum.Font.GothamBold; btn.TextSize = 0
+                Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+                local nLbl = Instance.new("TextLabel", btn); nLbl.Name = "nameLbl"; nLbl.Text = label; nLbl.Size = UDim2.new(0.5,-4,1,0); nLbl.Position = UDim2.new(0,8,0,0)
+                nLbl.BackgroundTransparency = 1; nLbl.TextColor3 = selected and C.green or C.text; nLbl.Font = Enum.Font.GothamBold; nLbl.TextSize = 10; nLbl.TextXAlignment = Enum.TextXAlignment.Left
+                local cLbl = Instance.new("TextLabel", btn); cLbl.Text = sublabel; cLbl.Size = UDim2.new(0.5,-8,1,0); cLbl.Position = UDim2.new(0.5,0,0,0)
+                cLbl.BackgroundTransparency = 1; cLbl.TextColor3 = C.sub; cLbl.Font = Enum.Font.Code; cLbl.TextSize = 8; cLbl.TextXAlignment = Enum.TextXAlignment.Right
+                local checkBox = Instance.new("Frame", btn); checkBox.Name = "checkBox"; checkBox.Size = UDim2.new(0,14,0,14); checkBox.Position = UDim2.new(1,-18,0.5,-7)
+                checkBox.BackgroundColor3 = selected and C.green or C.border; checkBox.BorderSizePixel = 0
+                Instance.new("UICorner", checkBox).CornerRadius = UDim.new(0,3)
+                local tick = Instance.new("TextLabel", checkBox); tick.Name = "tick"; tick.Text = "✓"; tick.Size = UDim2.new(1,0,1,0); tick.BackgroundTransparency = 1; tick.TextColor3 = Color3.fromRGB(255,255,255)
+                tick.Font = Enum.Font.GothamBold; tick.TextSize = 9; tick.Visible = selected
+                btn.MouseButton1Click:Connect(function()
+                    if opts.onSelectItem then opts.onSelectItem(id, not selected) end
+                    buildList(searchBox.Text)
+                    if opts.getStatusText then statusText.Text = opts.getStatusText() end
+                    if opts.getChainText then chainLbl.Text = opts.getChainText() end
+                end)
+            end
+        end
+
+        searchBox:GetPropertyChangedSignal("Text"):Connect(function() buildList(searchBox.Text) end)
+        refreshBtn.MouseButton1Click:Connect(function() buildList(searchBox.Text) end)
+        task.defer(function() buildList("") end)
+
+        return T
+    end
+
+    -- ============================================================
+    --  BUILT-IN: Player Tab (optimized noclip + god mode throttle)
+    -- ============================================================
+    function Win:PlayerTab()
+        local T = self:Tab("👤","Player")
+        local runGen = newGen()
+
+        T:Section("Movement")
+
+        local speedRef = { val = 16 }
+        T:Slider("Walk Speed","Default 16 · Max 300",{min=0,max=300,default=16}, function(v)
+            speedRef.val = v
+            local h = getHuman()
+            if h then h.WalkSpeed = v end
+        end)
+
+        T:Toggle("🚀 Infinite Jump","Jump again while airborne", false, function(on)
+            local myGen = newGen(); runGen = myGen
+            if on then
+                local conn; conn = UserInputService.JumpRequest:Connect(function()
+                    if runGen ~= myGen then conn:Disconnect(); return end
+                    local h = getHuman()
+                    if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+                end)
+            end
+        end)
+
+        Players.LocalPlayer.CharacterAdded:Connect(function(char)
+            local h = char:WaitForChild("Humanoid", 5)
+            if h then h.WalkSpeed = speedRef.val end
+        end)
+
+        T:Section("Utility")
+
+        T:Toggle("⏱️ Anti AFK","Prevents auto-kick every 55s", false, function(on)
+            local myGen = newGen(); runGen = myGen
+            if on then
+                task.spawn(function()
+                    local VU = game:GetService("VirtualUser")
+                    while true do
+                        if runGen ~= myGen then break end
+                        task.wait(55)
+                        if runGen ~= myGen then break end
+                        VU:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                        task.wait(0.1)
+                        VU:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                    end
+                end)
+            end
+        end)
+
+        -- Noclip: cache BaseParts (no per-frame GetDescendants)
+        local noclipParts = {}
+        local noclipConns = {}
+        local function clearNoclipConns()
+            for i = 1, #noclipConns do pcall(function() noclipConns[i]:Disconnect() end) end
+            noclipConns = {}
+        end
+        local function rebuildNoclipParts(char)
+            table.clear(noclipParts)
+            clearNoclipConns()
+            if not char then return end
+            for _, d in ipairs(char:GetDescendants()) do
+                if d:IsA("BasePart") then noclipParts[#noclipParts+1] = d end
+            end
+            noclipConns[#noclipConns+1] = char.DescendantAdded:Connect(function(d)
+                if d:IsA("BasePart") then noclipParts[#noclipParts+1] = d end
+            end)
+            noclipConns[#noclipConns+1] = char.DescendantRemoving:Connect(function(d)
+                if not d:IsA("BasePart") then return end
+                for i = #noclipParts, 1, -1 do
+                    if noclipParts[i] == d then table.remove(noclipParts, i) end
+                end
+            end)
+        end
+        rebuildNoclipParts(getChar())
+        LP.CharacterAdded:Connect(function(c) rebuildNoclipParts(c) end)
+
+        T:Toggle("👻 No Clip","Walk through walls", false, function(on)
+            local myGen = newGen(); runGen = myGen
+            if on then
+                local lastPrune = 0
+                local conn; conn = RunService.Stepped:Connect(function()
+                    if runGen ~= myGen then conn:Disconnect(); return end
+                    local now = os.clock()
+                    if now - lastPrune > 5 then
+                        lastPrune = now
+                        for i = #noclipParts, 1, -1 do
+                            local p = noclipParts[i]
+                            if not (p and p.Parent) then table.remove(noclipParts, i) end
+                        end
+                    end
+                    for i = 1, #noclipParts do
+                        local p = noclipParts[i]
+                        if p and p.Parent then p.CanCollide = false end
+                    end
+                end)
+            end
+        end)
+
+        -- God mode: throttle to 0.5s
+        local lastGod = 0
+        T:Toggle("🛡️ God Mode","Lock health to max", false, function(on)
+            local myGen = newGen(); runGen = myGen
+            if on then
+                task.spawn(function()
+                    while true do
+                        if runGen ~= myGen then break end
+                        local now = os.clock()
+                        if now - lastGod >= 0.5 then
+                            lastGod = now
+                            local h = getHuman()
+                            if h then h.Health = h.MaxHealth end
+                        end
+                        task.wait(0.1)
+                    end
+                end)
+            end
+        end)
+
+        T:Section("Actions")
+
+        T:Button("🔄","Respawn","Reset character", C.purple, function()
+            local h = getHuman()
+            if h then h.Health = 0 end
+        end)
+
+        T:Button("📋","Print Position","Prints XYZ to output", C.accent, function()
+            local r = getRoot()
+            if r then
+                local p = r.Position
+                print(string.format("[NexusLib] Position: X=%.1f Y=%.1f Z=%.1f", p.X, p.Y, p.Z))
+            end
+        end)
+
+        return T
+    end
+
+    return Win
+end
+
+return NexusLib
