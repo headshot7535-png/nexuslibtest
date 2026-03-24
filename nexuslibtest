@@ -29,7 +29,6 @@ local UserInputService = game:GetService("UserInputService")
 local RunService       = game:GetService("RunService")
 local TweenService     = game:GetService("TweenService")
 local HS               = game:GetService("HttpService")
-local TextService      = game:GetService("TextService")
 
 -- ── Player ───────────────────────────────────────────────────
 local LP
@@ -40,55 +39,50 @@ for _ = 1, 60 do
 end
 if not LP then return {} end
 
--- Roblox text filter: try strict → looser tiers. If every tier errors (common with executors / stubs),
--- return capped raw text so chat still works — not Roblox-compliant for published games; use server-side
--- filter for real moderation.
--- Returns: string (show/send), or false (Roblox returned empty = blocked).
+-- Simple client-side chat filter (no TextService — avoids executor / enum issues). Edit CHAT_BLOCKLIST.
+-- Longer phrases first so e.g. "bullshit" is censored before "shit". Substring match, case-insensitive.
+-- Not secure: anyone can bypass with a modified client; use server moderation for real games.
 local CHAT_FILTER_MAX_LEN = 400
-local function filterChatTextForViewer(raw, senderUserId, viewerUserId)
+local CHAT_BLOCKLIST = {
+    "bullshit", "motherfucker", "nigger", "nigga", "faggot", "retarded", "rape",
+    "fuck", "shit", "bitch", "dick", "cock", "pussy", "cunt", "slut", "whore", "damn", "hell",
+    "asshole", "bastard", "piss", "cum",
+}
+table.sort(CHAT_BLOCKLIST, function(a, b)
+    return #a > #b
+end)
+
+local function censorBlocklist(s)
+    for _, word in ipairs(CHAT_BLOCKLIST) do
+        if word ~= "" then
+            local lw = string.lower(word)
+            local hashes = string.rep("#", #word)
+            while true do
+                local low = string.lower(s)
+                local i, j = string.find(low, lw, 1, true)
+                if not i then
+                    break
+                end
+                s = s:sub(1, i - 1) .. hashes .. s:sub(j + 1)
+            end
+        end
+    end
+    return s
+end
+
+-- senderUserId / viewerUserId ignored (kept so call sites stay the same).
+local function filterChatTextForViewer(raw, _senderUserId, _viewerUserId)
     if type(raw) ~= "string" then return nil end
     raw = raw:match("^%s*(.-)%s*$") or ""
     if raw == "" then return nil end
+    raw = raw:gsub("%c", " ")
     if #raw > CHAT_FILTER_MAX_LEN then
         raw = raw:sub(1, CHAT_FILTER_MAX_LEN)
     end
-    local fromId = type(senderUserId) == "number" and senderUserId or LP.UserId
-    local toId = type(viewerUserId) == "number" and viewerUserId or LP.UserId
-
-    -- Returns: string (ok), false (filtered to empty — stop), nil (try next tier)
-    local function tier(context, getStr)
-        local ok, filterResult = pcall(function()
-            return TextService:FilterStringAsync(raw, fromId, context)
-        end)
-        if not ok or not filterResult then return nil end
-        local ok2, filtered = pcall(function()
-            return getStr(filterResult)
-        end)
-        if not ok2 or type(filtered) ~= "string" then return nil end
-        filtered = filtered:match("^%s*(.-)%s*$") or ""
-        if filtered == "" then return false end
-        return filtered
-    end
-
-    local r = tier(Enum.TextFilterContext.PublicChat, function(fr)
-        return fr:GetNonChatStringForUserAsync(toId)
-    end)
-    if type(r) == "string" then return r end
-    if r == false then return false end
-
-    r = tier(Enum.TextFilterContext.Broadcast, function(fr)
-        return fr:GetNonChatStringForUserAsync(toId)
-    end)
-    if type(r) == "string" then return r end
-    if r == false then return false end
-
-    r = tier(Enum.TextFilterContext.Broadcast, function(fr)
-        return fr:GetNonChatStringForBroadcastAsync()
-    end)
-    if type(r) == "string" then return r end
-    if r == false then return false end
-    -- TextService missing/broken: strip control chars, still capped
-    return (raw:gsub("%c", " "):match("^%s*(.-)%s*$") or "")
+    raw = censorBlocklist(raw)
+    raw = raw:match("^%s*(.-)%s*$") or ""
+    if raw == "" then return false end
+    return raw
 end
 
 local function getChar()  return LP.Character end
@@ -1141,7 +1135,7 @@ function NexusLib:Window(cfg)
         InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
         InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 9; InfoLbl.TextWrapped = true
         InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
-        InfoLbl.Text = "💬 Cross-server chat · Roblox filter when available; otherwise text is sent as-typed (executors often break TextService)."
+        InfoLbl.Text = "💬 Cross-server chat · local word filter (edit CHAT_BLOCKLIST in NexusLib). Not cheat-proof."
 
         local FeedOuter = Instance.new("Frame", T._page)
         FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
