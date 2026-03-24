@@ -40,9 +40,10 @@ for _ = 1, 60 do
 end
 if not LP then return {} end
 
--- Roblox text filter for custom chat. Do NOT use GetNonChatStringForBroadcastAsync for chat-like
--- text — it is for "non-chat" UIs (signs, etc.) and is often much looser than viewer-specific filtering.
--- Use PublicChat + GetNonChatStringForUserAsync(viewerUserId) so the string matches what this player may see.
+-- Roblox text filter: try strict chat-style path first, then fall back. Many environments (executors,
+-- timing) make PublicChat + GetNonChatStringForUserAsync error — that produced all "…" and failed sends.
+-- Fallback: Broadcast + GetNonChatStringForBroadcastAsync (looser). Empty string after a successful
+-- getter = intentionally blocked; we do not loosen that.
 local CHAT_FILTER_MAX_LEN = 400
 local function filterChatTextForViewer(raw, senderUserId, viewerUserId)
     if type(raw) ~= "string" then return nil end
@@ -53,17 +54,40 @@ local function filterChatTextForViewer(raw, senderUserId, viewerUserId)
     end
     local fromId = type(senderUserId) == "number" and senderUserId or LP.UserId
     local toId = type(viewerUserId) == "number" and viewerUserId or LP.UserId
-    local ok, filterResult = pcall(function()
-        return TextService:FilterStringAsync(raw, fromId, Enum.TextFilterContext.PublicChat)
+
+    -- Returns: string (ok), false (filtered to empty — stop), nil (try next tier)
+    local function tier(context, getStr)
+        local ok, filterResult = pcall(function()
+            return TextService:FilterStringAsync(raw, fromId, context)
+        end)
+        if not ok or not filterResult then return nil end
+        local ok2, filtered = pcall(function()
+            return getStr(filterResult)
+        end)
+        if not ok2 or type(filtered) ~= "string" then return nil end
+        filtered = filtered:match("^%s*(.-)%s*$") or ""
+        if filtered == "" then return false end
+        return filtered
+    end
+
+    local r = tier(Enum.TextFilterContext.PublicChat, function(fr)
+        return fr:GetNonChatStringForUserAsync(toId)
     end)
-    if not ok or not filterResult then return nil end
-    local ok2, filtered = pcall(function()
-        return filterResult:GetNonChatStringForUserAsync(toId)
+    if type(r) == "string" then return r end
+    if r == false then return false end
+
+    r = tier(Enum.TextFilterContext.Broadcast, function(fr)
+        return fr:GetNonChatStringForUserAsync(toId)
     end)
-    if not ok2 or type(filtered) ~= "string" then return nil end
-    filtered = filtered:match("^%s*(.-)%s*$") or ""
-    if filtered == "" then return nil end
-    return filtered
+    if type(r) == "string" then return r end
+    if r == false then return false end
+
+    r = tier(Enum.TextFilterContext.Broadcast, function(fr)
+        return fr:GetNonChatStringForBroadcastAsync()
+    end)
+    if type(r) == "string" then return r end
+    if r == false then return false end
+    return nil
 end
 
 local function getChar()  return LP.Character end
@@ -1116,7 +1140,7 @@ function NexusLib:Window(cfg)
         InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
         InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 9; InfoLbl.TextWrapped = true
         InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
-        InfoLbl.Text = "💬 Cross-server chat · Roblox PublicChat filter (per viewer). Exploit clients may bypass TextService."
+        InfoLbl.Text = "💬 Cross-server chat · Roblox text filter (strict path + fallbacks if your client errors)."
 
         local FeedOuter = Instance.new("Frame", T._page)
         FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
