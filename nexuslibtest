@@ -1,5 +1,5 @@
 -- ============================================================
---  NexusLib v1.3.1  |  GUI Library (Rayfield-style + ListTab + Notify)
+--  NexusLib v1.3  |  GUI Library (Rayfield-style + ListTab + Notify)
 --  Usage:
 --    local Lib = loadstring(game:HttpGet("URL"))()
 --    local Win  = Lib:Window({ title="My GUI" })
@@ -17,8 +17,7 @@
 --    Tab:Button("🔄","Respawn","Reset char", function() end)
 --    Win:Notify("Done", "Settings saved!", 3, "success")
 --    Win:Destroy()   -- tear down GUI
---    Win:ChatTab()   -- optional firebaseUrl; supports image embeds via pasted URLs
---    Win:ListTab({ ... })   Win:PlayerTab()
+--    Win:ChatTab()   Win:ListTab({ ... })   Win:PlayerTab()
 -- ============================================================
 
 local NexusLib = {}
@@ -55,40 +54,6 @@ local function httpRequest(opts)
              end)
     if not fn then return nil end
     return fn(opts)
-end
-
--- Clipboard text (executors). Copying a **screenshot** puts image/binary on the clipboard — most executors only expose **text**, so you get nil/empty. Use an image **URL** (Imgur, Discord Copy Image Link, etc.).
-local function getClipboardText()
-    local try = {
-        function() return type(getclipboard) == "function" and getclipboard() end,
-        function() return type(readclipboard) == "function" and readclipboard() end,
-        function() return syn and type(syn.getclipboard) == "function" and syn.getclipboard() end,
-        function() return type(getclipboardcontent) == "function" and getclipboardcontent() end,
-    }
-    for i = 1, #try do
-        local ok, s = pcall(try[i])
-        if ok and type(s) == "string" then
-            s = s:match("^%s*(.-)%s*$")
-            if s ~= "" then return s end
-        end
-    end
-    return nil
-end
-
-local function isImageLikeUrl(s)
-    if type(s) ~= "string" then return false end
-    s = s:match("^%s*(.-)%s*$") or ""
-    local low = s:lower()
-    if low:match("^rbxassetid://%d+") or low:match("^rbxthumb://") then return true end
-    if not low:match("^https?://") then return false end
-    if low:match("%.png") or low:match("%.jpe?g") or low:match("%.gif") or low:match("%.webp") or low:match("%.avif") then
-        return true
-    end
-    if low:find("discordapp.com/attachments", 1, true) or low:find("discord.com/attachments", 1, true) then return true end
-    if low:find("i.imgur.com", 1, true) or low:find("imgur.com", 1, true) then return true end
-    if low:find("media.discordapp.net", 1, true) then return true end
-    if low:find("gyazo.com", 1, true) or low:find("prnt.sc", 1, true) then return true end
-    return false
 end
 
 -- ── Theme ─────────────────────────────────────────────────────
@@ -1116,15 +1081,15 @@ function NexusLib:Window(cfg)
         local T = self:Tab("💬","Chat")
 
         local InfoCard = Instance.new("Frame", T._page)
-        InfoCard.Size = UDim2.new(1,-10,0,52); InfoCard.BackgroundColor3 = Color3.fromRGB(30,30,45)
+        InfoCard.Size = UDim2.new(1,-10,0,28); InfoCard.BackgroundColor3 = Color3.fromRGB(30,30,45)
         InfoCard.BorderSizePixel = 0; InfoCard.LayoutOrder = 1
         Instance.new("UICorner",InfoCard).CornerRadius = UDim.new(0,8)
         local InfoLbl = Instance.new("TextLabel",InfoCard)
         InfoLbl.Size = UDim2.new(1,-10,1,0); InfoLbl.Position = UDim2.new(0,8,0,0)
         InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
-        InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 8; InfoLbl.TextWrapped = true
+        InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 9; InfoLbl.TextWrapped = true
         InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
-        InfoLbl.Text = "💬 Chat · 📋 = paste TEXT from clipboard only. A screenshot is an image, not text - upload to Imgur or Discord Copy image link, then paste the URL. Some executors have no getclipboard()."
+        InfoLbl.Text = "💬 Cross-server chat"
 
         local FeedOuter = Instance.new("Frame", T._page)
         FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
@@ -1142,79 +1107,40 @@ function NexusLib:Window(cfg)
         local FeedPad = Instance.new("UIPadding",FeedScroll)
         FeedPad.PaddingLeft = UDim.new(0,6); FeedPad.PaddingRight = UDim.new(0,6)
 
-        local function addLine(user, text, server, isSystem, imageUrl)
+        local function addLine(user, text, server, isSystem)
             local row = Instance.new("Frame",FeedScroll)
             row.Size = UDim2.new(1,0,0,0); row.AutomaticSize = Enum.AutomaticSize.Y
             row.BackgroundTransparency = 1; row.LayoutOrder = #FeedScroll:GetChildren()
-            Instance.new("UIListLayout", row).Padding = UDim.new(0,4)
-
             local lbl = Instance.new("TextLabel",row)
             lbl.Size = UDim2.new(1,0,0,0); lbl.AutomaticSize = Enum.AutomaticSize.Y
             lbl.BackgroundTransparency = 1; lbl.TextWrapped = true
             lbl.TextXAlignment = Enum.TextXAlignment.Left
             lbl.Font = Enum.Font.Code; lbl.TextSize = 10
             if isSystem then
-                lbl.TextColor3 = C.sub; lbl.Text = "— "..tostring(text or "")
+                lbl.TextColor3 = C.sub; lbl.Text = "— "..text
             else
                 lbl.TextColor3 = C.text
-                local cap = tostring(text or "")
-                if (cap == "" or cap == "📷") and imageUrl and imageUrl ~= "" then cap = "📷 image" end
-                lbl.Text = "["..tostring(server or "?").."] "..tostring(user or "Anon")..": "..cap
+                lbl.Text = "["..tostring(server or "?").."] "..tostring(user or "Anon")..": "..tostring(text)
             end
-
-            if not isSystem and type(imageUrl) == "string" and imageUrl ~= "" then
-                local imgHolder = Instance.new("Frame", row)
-                imgHolder.Size = UDim2.new(1,0,0,140)
-                imgHolder.BackgroundColor3 = Color3.fromRGB(18,18,28)
-                imgHolder.BorderSizePixel = 0
-                Instance.new("UICorner", imgHolder).CornerRadius = UDim.new(0,8)
-                local ist = Instance.new("UIStroke", imgHolder); ist.Color = C.border; ist.Thickness = 1
-                local img = Instance.new("ImageLabel", imgHolder)
-                img.BackgroundTransparency = 1
-                img.Size = UDim2.new(1,-8,1,-8)
-                img.Position = UDim2.new(0,4,0,4)
-                img.ScaleType = Enum.ScaleType.Fit
-                img.Image = imageUrl
-                local hint = Instance.new("TextLabel", row)
-                hint.Size = UDim2.new(1,0,0,0); hint.AutomaticSize = Enum.AutomaticSize.Y
-                hint.BackgroundTransparency = 1
-                hint.TextColor3 = C.sub
-                hint.Font = Enum.Font.Gotham
-                hint.TextSize = 8
-                hint.TextXAlignment = Enum.TextXAlignment.Left
-                hint.TextWrapped = true
-                local short = imageUrl
-                if #short > 220 then short = short:sub(1, 217) .. "…" end
-                hint.Text = "🔗 "..short
-            end
-
             task.defer(function()
                 FeedScroll.CanvasPosition = Vector2.new(0, FeedLayout.AbsoluteContentSize.Y)
             end)
         end
 
         local InputCard = Instance.new("Frame",T._page)
-        InputCard.Size = UDim2.new(1,-10,0,48); InputCard.BackgroundColor3 = C.card
+        InputCard.Size = UDim2.new(1,-10,0,36); InputCard.BackgroundColor3 = C.card
         InputCard.BorderSizePixel = 0; InputCard.LayoutOrder = 3
         Instance.new("UICorner",InputCard).CornerRadius = UDim.new(0,10)
         Instance.new("UIStroke",InputCard).Color = C.border
 
         local ChatInput = Instance.new("TextBox",InputCard)
-        ChatInput.Size = UDim2.new(1,-108,1,-8); ChatInput.Position = UDim2.new(0,8,0,4)
+        ChatInput.Size = UDim2.new(1,-56,1,-8); ChatInput.Position = UDim2.new(0,8,0,4)
         ChatInput.BackgroundColor3 = Color3.fromRGB(18,18,26); ChatInput.BorderSizePixel = 0
         ChatInput.TextColor3 = C.text; ChatInput.Font = Enum.Font.Gotham; ChatInput.TextSize = 10
-        ChatInput.PlaceholderText = "Message or image URL…"; ChatInput.Text = ""
-        ChatInput.ClearTextOnFocus = false; ChatInput.MultiLine = true
-        ChatInput.ClipsDescendants = true
+        ChatInput.PlaceholderText = "Type a message..."; ChatInput.Text = ""
+        ChatInput.ClearTextOnFocus = false; ChatInput.ClipsDescendants = true
         Instance.new("UICorner",ChatInput).CornerRadius = UDim.new(0,6)
         Instance.new("UIPadding",ChatInput).PaddingLeft = UDim.new(0,6)
-
-        local PasteBtn = Instance.new("TextButton",InputCard)
-        PasteBtn.Size = UDim2.new(0,40,1,-8); PasteBtn.Position = UDim2.new(1,-96,0,4)
-        PasteBtn.BackgroundColor3 = Color3.fromRGB(35,40,60); PasteBtn.BorderSizePixel = 0
-        PasteBtn.TextColor3 = C.text; PasteBtn.Font = Enum.Font.GothamBold
-        PasteBtn.TextSize = 16; PasteBtn.Text = "📋"
-        Instance.new("UICorner",PasteBtn).CornerRadius = UDim.new(0,6)
 
         local SendBtn = Instance.new("TextButton",InputCard)
         SendBtn.Size = UDim2.new(0,44,1,-8); SendBtn.Position = UDim2.new(1,-50,0,4)
@@ -1237,28 +1163,14 @@ function NexusLib:Window(cfg)
             return j ~= "" and j:sub(1,5) or "local"
         end
 
-        local function doSend(raw)
-            local trimmed = type(raw) == "string" and raw:match("^%s*(.-)%s*$") or ""
-            if trimmed == "" then return end
-            local imageUrl = nil
-            local bodyText = trimmed
-            local firstLine, rest = trimmed:match("^([^\r\n]+)[\r\n]+(.+)$")
-            if firstLine and rest and isImageLikeUrl(firstLine) then
-                imageUrl = firstLine:match("^%s*(.-)%s*$")
-                bodyText = rest:match("^%s*(.-)%s*$") or ""
-                if bodyText == "" then bodyText = "📷" end
-            elseif isImageLikeUrl(trimmed) then
-                imageUrl = trimmed
-                bodyText = "📷"
-            end
-            local payloadTbl = {
+        local function doSend(text)
+            if text == "" then return end
+            local payload = HS:JSONEncode({
                 user   = "Anonymous",
                 server = shortSrv(),
-                text   = bodyText,
+                text   = text,
                 time   = os.time(),
-            }
-            if imageUrl then payloadTbl.imageUrl = imageUrl end
-            local payload = HS:JSONEncode(payloadTbl)
+            })
             local ok, res = pcall(httpRequest, {
                 Url     = firebaseUrl..".json",
                 Method  = "POST",
@@ -1272,58 +1184,15 @@ function NexusLib:Window(cfg)
             end
         end
 
-        PasteBtn.MouseButton1Click:Connect(function()
-            local c = getClipboardText()
-            if not c then
-                -- Don’t post to Firebase feed — local toast only
-                pcall(function()
-                    self:Notify(
-                        "Clipboard",
-                        "No text, or executor has no getclipboard(). Screenshots are not text - upload to Imgur or Discord, then paste the https link.",
-                        9,
-                        "warning"
-                    )
-                end)
-                return
-            end
-            if isImageLikeUrl(c) then
-                ChatInput.Text = c
-                return
-            end
-            local cur = ChatInput.Text
-            if cur == "" or cur:match("^%s*$") then
-                ChatInput.Text = c
-            elseif not cur:find(c, 1, true) then
-                ChatInput.Text = cur .. (cur:match("%s$") and "" or " ") .. c
-            end
-        end)
-
-        UserInputService.InputBegan:Connect(function(input, gameProcessed)
-            if gameProcessed then return end
-            if input.KeyCode ~= Enum.KeyCode.V then return end
-            if not (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then return end
-            if not ChatInput:IsFocused() then return end
-            task.defer(function()
-                local c = getClipboardText()
-                if not c or not isImageLikeUrl(c) then return end
-                local cur = ChatInput.Text
-                if cur == "" or cur:match("^%s*$") then
-                    ChatInput.Text = c
-                elseif not cur:find(c, 1, true) then
-                    ChatInput.Text = cur .. (cur:match("%s$") and "" or " ") .. c
-                end
-            end)
-        end)
-
         SendBtn.MouseButton1Click:Connect(function()
             local txt = ChatInput.Text:match("^%s*(.-)%s*$")
             if txt == "" then return end
-            doSend(ChatInput.Text); ChatInput.Text = ""
+            doSend(txt); ChatInput.Text = ""
         end)
         ChatInput.FocusLost:Connect(function(enter)
             if enter then
                 local txt = ChatInput.Text:match("^%s*(.-)%s*$")
-                if txt ~= "" then doSend(ChatInput.Text); ChatInput.Text = "" end
+                if txt ~= "" then doSend(txt); ChatInput.Text = "" end
             end
         end)
 
@@ -1355,15 +1224,7 @@ function NexusLib:Window(cfg)
                 local msgs = {}
                 for key, v in pairs(data) do
                     if type(v) == "table" and v.time and not seenKeys[key] then
-                        local iu = v.imageUrl
-                        if type(iu) ~= "string" or iu == "" then
-                            local tx = tostring(v.text or "")
-                            if isImageLikeUrl(tx) then iu = tx:match("^%s*(.-)%s*$") end
-                        end
-                        table.insert(msgs, {
-                            key = key, user = v.user, server = v.server, text = v.text, time = v.time,
-                            imageUrl = (type(iu) == "string" and iu ~= "") and iu or nil,
-                        })
+                        table.insert(msgs, {key=key,user=v.user,server=v.server,text=v.text,time=v.time})
                     end
                 end
                 table.sort(msgs, function(a,b) return a.time < b.time end)
@@ -1371,7 +1232,7 @@ function NexusLib:Window(cfg)
                     local m = msgs[i]
                     seenKeys[m.key] = true
                     table.insert(seenOrder, m.key)
-                    addLine(m.user, m.text, m.server, false, m.imageUrl)
+                    addLine(m.user, m.text, m.server, false)
                 end
                 pruneSeen()
                 return #msgs > 0
