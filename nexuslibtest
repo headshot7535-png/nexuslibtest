@@ -57,18 +57,22 @@ local function httpRequest(opts)
     return fn(opts)
 end
 
--- Clipboard text (executors). Raw image paste like Discord desktop is not available in Roblox; use image **links**.
+-- Clipboard text (executors). Copying a **screenshot** puts image/binary on the clipboard — most executors only expose **text**, so you get nil/empty. Use an image **URL** (Imgur, Discord Copy Image Link, etc.).
 local function getClipboardText()
-    local s = nil
-    if type(getclipboard) == "function" then
-        pcall(function() s = getclipboard() end)
-    elseif type(readclipboard) == "function" then
-        pcall(function() s = readclipboard() end)
+    local try = {
+        function() return type(getclipboard) == "function" and getclipboard() end,
+        function() return type(readclipboard) == "function" and readclipboard() end,
+        function() return syn and type(syn.getclipboard) == "function" and syn.getclipboard() end,
+        function() return type(getclipboardcontent) == "function" and getclipboardcontent() end,
+    }
+    for i = 1, #try do
+        local ok, s = pcall(try[i])
+        if ok and type(s) == "string" then
+            s = s:match("^%s*(.-)%s*$")
+            if s ~= "" then return s end
+        end
     end
-    if type(s) ~= "string" then return nil end
-    s = s:match("^%s*(.-)%s*$")
-    if s == "" then return nil end
-    return s
+    return nil
 end
 
 local function isImageLikeUrl(s)
@@ -1112,7 +1116,7 @@ function NexusLib:Window(cfg)
         local T = self:Tab("💬","Chat")
 
         local InfoCard = Instance.new("Frame", T._page)
-        InfoCard.Size = UDim2.new(1,-10,0,40); InfoCard.BackgroundColor3 = Color3.fromRGB(30,30,45)
+        InfoCard.Size = UDim2.new(1,-10,0,52); InfoCard.BackgroundColor3 = Color3.fromRGB(30,30,45)
         InfoCard.BorderSizePixel = 0; InfoCard.LayoutOrder = 1
         Instance.new("UICorner",InfoCard).CornerRadius = UDim.new(0,8)
         local InfoLbl = Instance.new("TextLabel",InfoCard)
@@ -1120,7 +1124,7 @@ function NexusLib:Window(cfg)
         InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
         InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 8; InfoLbl.TextWrapped = true
         InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
-        InfoLbl.Text = "💬 Cross-server chat · Images: paste a direct image URL (Discord: Copy Image Link). Roblox cannot read raw clipboard photos. 📋 = clipboard."
+        InfoLbl.Text = "💬 Chat · 📋 = paste TEXT from clipboard only. A screenshot is an image, not text - upload to Imgur or Discord Copy image link, then paste the URL. Some executors have no getclipboard()."
 
         local FeedOuter = Instance.new("Frame", T._page)
         FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
@@ -1271,7 +1275,15 @@ function NexusLib:Window(cfg)
         PasteBtn.MouseButton1Click:Connect(function()
             local c = getClipboardText()
             if not c then
-                addLine(nil, "Clipboard empty or executor has no getclipboard()", nil, true)
+                -- Don’t post to Firebase feed — local toast only
+                pcall(function()
+                    self:Notify(
+                        "Clipboard",
+                        "No text, or executor has no getclipboard(). Screenshots are not text - upload to Imgur or Discord, then paste the https link.",
+                        9,
+                        "warning"
+                    )
+                end)
                 return
             end
             if isImageLikeUrl(c) then
