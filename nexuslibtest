@@ -40,10 +40,10 @@ for _ = 1, 60 do
 end
 if not LP then return {} end
 
--- Roblox text filter: try strict chat-style path first, then fall back. Many environments (executors,
--- timing) make PublicChat + GetNonChatStringForUserAsync error — that produced all "…" and failed sends.
--- Fallback: Broadcast + GetNonChatStringForBroadcastAsync (looser). Empty string after a successful
--- getter = intentionally blocked; we do not loosen that.
+-- Roblox text filter: try strict → looser tiers. If every tier errors (common with executors / stubs),
+-- return capped raw text so chat still works — not Roblox-compliant for published games; use server-side
+-- filter for real moderation.
+-- Returns: string (show/send), or false (Roblox returned empty = blocked).
 local CHAT_FILTER_MAX_LEN = 400
 local function filterChatTextForViewer(raw, senderUserId, viewerUserId)
     if type(raw) ~= "string" then return nil end
@@ -87,7 +87,8 @@ local function filterChatTextForViewer(raw, senderUserId, viewerUserId)
     end)
     if type(r) == "string" then return r end
     if r == false then return false end
-    return nil
+    -- TextService missing/broken: strip control chars, still capped
+    return (raw:gsub("%c", " "):match("^%s*(.-)%s*$") or "")
 end
 
 local function getChar()  return LP.Character end
@@ -1140,7 +1141,7 @@ function NexusLib:Window(cfg)
         InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
         InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 9; InfoLbl.TextWrapped = true
         InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
-        InfoLbl.Text = "💬 Cross-server chat · Roblox text filter (strict path + fallbacks if your client errors)."
+        InfoLbl.Text = "💬 Cross-server chat · Roblox filter when available; otherwise text is sent as-typed (executors often break TextService)."
 
         local FeedOuter = Instance.new("Frame", T._page)
         FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
@@ -1218,8 +1219,12 @@ function NexusLib:Window(cfg)
             if text == "" then return end
             task.spawn(function()
                 local filtered = filterChatTextForViewer(text, LP.UserId, LP.UserId)
-                if not filtered then
-                    addLine(nil, "❌ Message was blocked or could not be filtered (empty / moderation).", nil, true)
+                if filtered == false then
+                    addLine(nil, "❌ Message was fully blocked by moderation.", nil, true)
+                    return
+                end
+                if type(filtered) ~= "string" or filtered == "" then
+                    addLine(nil, "❌ Message empty after filter.", nil, true)
                     return
                 end
                 local payload = HS:JSONEncode({
@@ -1306,7 +1311,9 @@ function NexusLib:Window(cfg)
                             local senderId = type(m.fromUserId) == "number" and m.fromUserId or LP.UserId
                             local raw = type(m.text) == "string" and m.text or ""
                             local display = filterChatTextForViewer(raw, senderId, LP.UserId)
-                            if not display then
+                            if display == false then
+                                display = "…"
+                            elseif type(display) ~= "string" or display == "" then
                                 display = "…"
                             end
                             addLine(m.user, display, m.server, false)
