@@ -29,6 +29,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService       = game:GetService("RunService")
 local TweenService     = game:GetService("TweenService")
 local HS               = game:GetService("HttpService")
+local TextService      = game:GetService("TextService")
 
 -- ── Player ───────────────────────────────────────────────────
 local LP
@@ -38,6 +39,30 @@ for _ = 1, 60 do
     task.wait(0.2)
 end
 if not LP then return {} end
+
+-- Roblox text filter for custom chat (required for user-generated text shown to others).
+-- See: TextService | TextFilterContext.Broadcast
+local CHAT_FILTER_MAX_LEN = 400
+local function filterBroadcastText(raw, senderUserId)
+    if type(raw) ~= "string" then return nil end
+    raw = raw:match("^%s*(.-)%s*$") or ""
+    if raw == "" then return nil end
+    if #raw > CHAT_FILTER_MAX_LEN then
+        raw = raw:sub(1, CHAT_FILTER_MAX_LEN)
+    end
+    local uid = type(senderUserId) == "number" and senderUserId or LP.UserId
+    local ok, filterResult = pcall(function()
+        return TextService:FilterStringAsync(raw, uid, Enum.TextFilterContext.Broadcast)
+    end)
+    if not ok or not filterResult then return nil end
+    local ok2, filtered = pcall(function()
+        return filterResult:GetNonChatStringForBroadcastAsync()
+    end)
+    if not ok2 or type(filtered) ~= "string" then return nil end
+    filtered = filtered:match("^%s*(.-)%s*$") or ""
+    if filtered == "" then return nil end
+    return filtered
+end
 
 local function getChar()  return LP.Character end
 local function getHuman() local c=getChar() return c and c:FindFirstChildOfClass("Humanoid") end
@@ -1089,7 +1114,7 @@ function NexusLib:Window(cfg)
         InfoLbl.BackgroundTransparency = 1; InfoLbl.TextColor3 = C.sub
         InfoLbl.Font = Enum.Font.Gotham; InfoLbl.TextSize = 9; InfoLbl.TextWrapped = true
         InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
-        InfoLbl.Text = "💬 Cross-server chat"
+        InfoLbl.Text = "💬 Cross-server chat · text is filtered by Roblox before send & on display"
 
         local FeedOuter = Instance.new("Frame", T._page)
         FeedOuter.Size = UDim2.new(1,-10,0,200); FeedOuter.BackgroundColor3 = Color3.fromRGB(14,14,22)
@@ -1165,23 +1190,31 @@ function NexusLib:Window(cfg)
 
         local function doSend(text)
             if text == "" then return end
-            local payload = HS:JSONEncode({
-                user   = "Anonymous",
-                server = shortSrv(),
-                text   = text,
-                time   = os.time(),
-            })
-            local ok, res = pcall(httpRequest, {
-                Url     = firebaseUrl..".json",
-                Method  = "POST",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body    = payload,
-            })
-            if not ok or not res then
-                addLine(nil, "❌ Send failed: "..tostring(res), nil, true)
-            elseif res.StatusCode and res.StatusCode >= 400 then
-                addLine(nil, "❌ HTTP "..res.StatusCode, nil, true)
-            end
+            task.spawn(function()
+                local filtered = filterBroadcastText(text, LP.UserId)
+                if not filtered then
+                    addLine(nil, "❌ Message was blocked or could not be filtered (empty / moderation).", nil, true)
+                    return
+                end
+                local payload = HS:JSONEncode({
+                    user       = "Anonymous",
+                    fromUserId = LP.UserId,
+                    server     = shortSrv(),
+                    text       = filtered,
+                    time       = os.time(),
+                })
+                local ok, res = pcall(httpRequest, {
+                    Url     = firebaseUrl..".json",
+                    Method  = "POST",
+                    Headers = { ["Content-Type"] = "application/json" },
+                    Body    = payload,
+                })
+                if not ok or not res then
+                    addLine(nil, "❌ Send failed: "..tostring(res), nil, true)
+                elseif res.StatusCode and res.StatusCode >= 400 then
+                    addLine(nil, "❌ HTTP "..res.StatusCode, nil, true)
+                end
+            end)
         end
 
         SendBtn.MouseButton1Click:Connect(function()
@@ -1224,17 +1257,39 @@ function NexusLib:Window(cfg)
                 local msgs = {}
                 for key, v in pairs(data) do
                     if type(v) == "table" and v.time and not seenKeys[key] then
-                        table.insert(msgs, {key=key,user=v.user,server=v.server,text=v.text,time=v.time})
+                        table.insert(msgs, {
+                            key = key,
+                            user = v.user,
+                            fromUserId = v.fromUserId,
+                            server = v.server,
+                            text = v.text,
+                            time = v.time,
+                        })
                     end
                 end
-                table.sort(msgs, function(a,b) return a.time < b.time end)
+                table.sort(msgs, function(a, b) return a.time < b.time end)
                 for i = 1, #msgs do
                     local m = msgs[i]
                     seenKeys[m.key] = true
                     table.insert(seenOrder, m.key)
-                    addLine(m.user, m.text, m.server, false)
                 end
-                pruneSeen()
+                if #msgs > 0 then
+                    task.spawn(function()
+                        for i = 1, #msgs do
+                            local m = msgs[i]
+                            local senderId = type(m.fromUserId) == "number" and m.fromUserId or LP.UserId
+                            local raw = type(m.text) == "string" and m.text or ""
+                            local display = filterBroadcastText(raw, senderId)
+                            if not display then
+                                display = "…"
+                            end
+                            addLine(m.user, display, m.server, false)
+                        end
+                        pruneSeen()
+                    end)
+                else
+                    pruneSeen()
+                end
                 return #msgs > 0
             end
 
